@@ -1,6 +1,7 @@
 /** Independent Desktop frame shared by compatibility and extended modes. */
 
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
 import type {} from './contracts.ts'
 import { ExtendedFrame } from './ExtendedFrame.tsx'
@@ -44,6 +45,7 @@ function applyExtendedOwnedShell(ctx: ClientContext, environment: DesktopClientE
     children: {
       'sidebar': { kind: 'single', scope: 'root' },
       'conversation': { kind: 'single', scope: 'session-maybe' },
+      'main.surface': { kind: 'single', scope: 'root' },
       'details': { kind: 'single', scope: 'session' },
       'shell.overlay': { kind: 'list', scope: 'root' },
     },

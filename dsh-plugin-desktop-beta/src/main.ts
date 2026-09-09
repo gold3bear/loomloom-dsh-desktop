@@ -14,7 +14,6 @@ import {
   type FailLoudProcess,
 } from '@deepseek-ai/dsh-app-boot'
 import { provideCmdline } from '@deepseek-ai/dsh-cmdline'
-import { defaultDshHome, resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import {
   DSH_LAUNCH_ENVIRONMENT_KEY,
   type LaunchEnvironmentSnapshot,
@@ -26,6 +25,7 @@ import {
   isDesktopInstallerQuitRequest,
 } from './desktop-installer-quit.ts'
 import { createDesktopBrowserAccess } from './desktop-browser-access.ts'
+import { defaultLoomloomHome, resolveLoomloomHome } from './loomloom-home.ts'
 import {
   installDesktopDshRuntime,
   installDesktopPnpmRuntime,
@@ -699,8 +699,8 @@ async function start(): Promise<void> {
     })
     const dshBootstrapPath = fileURLToPath(new URL('./desktop-cli.js', import.meta.url))
     const releasePnpmRuntime = generation.own(() => { pnpmRuntime.dispose() })
-    const fallbackHome = resolveDshHome()
-    const defaultHome = resolve(defaultDshHome())
+    const fallbackHome = resolveLoomloomHome()
+    const defaultHome = resolve(defaultLoomloomHome())
     const fallbackSource = process.env.DSH_HOME === undefined ? 'default' : 'environment'
     let dataDirectoryLocation: DesktopDataDirectoryLocation | undefined
     let homeDir: string

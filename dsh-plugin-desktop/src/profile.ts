@@ -35,13 +35,13 @@ import {
   type ProfileManifest,
   type ProfilePatchReload,
 } from '@deepseek-ai/dsh-app-boot'
-import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import FileSettingsProvider, {
   resolveSpec as resolveSettingsFileSpec,
   type Config as SettingsFileConfig,
 } from '@deepseek-ai/dsh-settings-file'
 import { parseAllDocuments, parseDocument } from 'yaml'
 import { findOverlayPackage, resolveOverlayPackage } from './package-overlay.ts'
+import { defaultLoomloomHome } from './loomloom-home.ts'
 import { withAsarModuleResolver } from './asar-module-resolver-state.ts'
 import { DESKTOP_DEFAULT_WEB_PORT } from './desktop-port.ts'
 import {
@@ -349,7 +349,7 @@ function sameList(left: readonly string[], right: readonly string[]): boolean {
  * @param home - Harness home containing the profiles directory.
  * @returns the absolute profile directory.
  */
-export function ensureDesktopProfile(home: string = resolveDshHome()): string {
+export function ensureDesktopProfile(home: string = defaultLoomloomHome()): string {
   const dir = resolveProfileDir(DESKTOP_PROFILE_NAME, home)
   if (!existsSync(join(dir, 'package.json'))) {
     initProfile(dir, REQUIRED_BUNDLES, requiredWebPatchReload())
@@ -839,7 +839,7 @@ function loadDesktopMachinePatches(home: string): PatchOptions[] {
  */
 export function prepareDesktopProfile(
   telemetryDisabled: string | undefined = process.env.DSH_TELEMETRY_DISABLED,
-  home: string = resolveDshHome(),
+  home: string = defaultLoomloomHome(),
   platform: NodeJS.Platform = process.platform,
   profileName: string = DESKTOP_PROFILE_NAME,
   pluginStatePath?: string,

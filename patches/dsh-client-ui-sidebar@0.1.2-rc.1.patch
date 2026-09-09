@@ -1,0 +1,58 @@
+diff --git a/lib/client.js b/lib/client.js
+index 1dce9bd3d50694d786c2c98cc801c28e95f92d87..781c3bb48e185b132f16be01220a930df5288a6e 100644
+--- a/lib/client.js
++++ b/lib/client.js
+@@ -230,6 +230,7 @@ window.__ModuleLoader__.load({
+ 							})]
+ 						})
+ 					}),
++					renderSlot("sidebar.primary.navigation", { wide }),
+ 					(0, react_jsx_runtime.jsx)("div", {
+ 						className: SidebarRoot_module_css_default.regionArea,
+ 						children: renderSlot("sidebar.workspaces", {
+@@ -313,6 +314,10 @@ window.__ModuleLoader__.load({
+ 						kind: "single",
+ 						scope: "root"
+ 					},
++					"sidebar.primary.navigation": {
++						kind: "list",
++						scope: "root"
++					},
+ 					"sidebar.settings": {
+ 						kind: "single",
+ 						scope: "root"
+diff --git a/lib/types/client/contract/slots.d.ts b/lib/types/client/contract/slots.d.ts
+index 67c3b72e21f2d1311a3349377b4dd1789e285850..093be976ff9c9ad00ed6d7aa4e315d43b4c0f286 100644
+--- a/lib/types/client/contract/slots.d.ts
++++ b/lib/types/client/contract/slots.d.ts
+@@ -41,6 +41,12 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
+             scope: 'root';
+             owner: SidebarSectionOwnerProps;
+         };
++        /** Primary navigation rows rendered between New Session and Workspaces. */
++        'sidebar.primary.navigation': {
++            kind: 'list';
++            scope: 'root';
++            owner: SidebarPrimaryNavigationOwnerProps;
++        };
+         /**
+          * The settings seat at the sidebar foot. Declared by this package's
+          * 'sidebar' entry; ui-settings registers its trigger row + modal panel.
+@@ -82,6 +88,10 @@ export interface SidebarSectionOwnerProps {
+     /** Rail icons request expansion; the browser rides the wide flip for focus. */
+     expandSidebar: () => void;
+ }
++/** Column state supplied to primary sidebar navigation entries. */
++export interface SidebarPrimaryNavigationOwnerProps {
++    wide: boolean;
++}
+ /**
+  * Owner share of the sidebar settings seat: the column display state the
+  * occupant's trigger row must render against (wide row vs rail icon).
+@@ -115,5 +125,5 @@ export type SidebarRootInjected = {
+  * render shares, this package's injected callbacks, and the standard locale
+  * seat. No store is registered.
+  */
+-export type SidebarRootComponentProps = PropsRuntime<'sidebar'> & PropsRenderSlots<'sidebar.brand.mark' | 'sidebar.brand.name' | 'sidebar.workspaces' | 'sidebar.settings' | 'sidebar.footer.action'> & SidebarRootInjected & PropsLocale<'sidebar'>;
++export type SidebarRootComponentProps = PropsRuntime<'sidebar'> & PropsRenderSlots<'sidebar.brand.mark' | 'sidebar.brand.name' | 'sidebar.primary.navigation' | 'sidebar.workspaces' | 'sidebar.settings' | 'sidebar.footer.action'> & SidebarRootInjected & PropsLocale<'sidebar'>;
+ //# sourceMappingURL=slots.d.ts.map

@@ -1,0 +1,73 @@
+diff --git a/lib/client.js b/lib/client.js
+index d073ec2f6833069f10691d0d736eb8cb53d2741a..4a7a87fe75889f6e4971a799e63e421cbc997441 100644
+--- a/lib/client.js
++++ b/lib/client.js
+@@ -236,6 +236,7 @@ window.__ModuleLoader__.load({
+ 			const onDetailsDrag = (0, react.useCallback)((dx) => {
+ 				actions.setDetails(detailsBase.current - dx);
+ 			}, [actions]);
++			const conversationContent = renderSlot("conversation", {});
+ 			return (0, react_jsx_runtime.jsxs)("div", {
+ 				ref: frameRef,
+ 				className: AppFrame_module_css_default.frame,
+@@ -255,7 +256,7 @@ window.__ModuleLoader__.load({
+ 							width: cols.sidebar
+ 						})
+ 					}),
+-					(0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsx)(CenterColumn, { children: renderSlot("conversation", {}) }), (0, react_jsx_runtime.jsx)(DetailsColumn, { children: (0, react_jsx_runtime.jsx)(SessionProvider, { children: renderSlot("details", {}) }) })] }),
++					(0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsx)(CenterColumn, { children: renderSlot("main.surface", { defaultContent: conversationContent }, { fallback: conversationContent }) }), (0, react_jsx_runtime.jsx)(DetailsColumn, { children: (0, react_jsx_runtime.jsx)(SessionProvider, { children: renderSlot("details", {}) }) })] }),
+ 					(0, react_jsx_runtime.jsx)("div", {
+ 						className: AppFrame_module_css_default.overlayLayer,
+ 						"data-shell-overlay": true,
+@@ -447,6 +448,10 @@ window.__ModuleLoader__.load({
+ 							kind: "single",
+ 							scope: "session-maybe"
+ 						},
++						"main.surface": {
++							kind: "single",
++							scope: "root"
++						},
+ 						"details": {
+ 							kind: "single",
+ 							scope: "session"
+diff --git a/lib/types/client/AppFrame.d.ts b/lib/types/client/AppFrame.d.ts
+index 8741d3161ff073af8dafb39d11a88260231c25c1..4e61644b89986abd9768711e81fcf429e8e7354e 100644
+--- a/lib/types/client/AppFrame.d.ts
++++ b/lib/types/client/AppFrame.d.ts
+@@ -1,7 +1,7 @@
+ import type { PropsLocale, PropsRenderSlots, PropsRuntime, PropsStore } from '@deepseek-ai/dsh-client-ui-slots';
+ import type { createLayoutStore } from './stores.ts';
+ /** Full composed props: runtime share + child-slot render share + store share. */
+-export type AppFrameProps = PropsRuntime<'root'> & PropsRenderSlots<'sidebar' | 'conversation' | 'details' | 'shell.overlay'> & PropsStore<ReturnType<typeof createLayoutStore>> & PropsLocale<'common'>;
++export type AppFrameProps = PropsRuntime<'root'> & PropsRenderSlots<'sidebar' | 'conversation' | 'main.surface' | 'details' | 'shell.overlay'> & PropsStore<ReturnType<typeof createLayoutStore>> & PropsLocale<'common'>;
+ /** The three-column frame (see module doc). */
+ export declare function AppFrame({ useStore, useSessions, actions, renderSlot, SessionProvider, t, }: AppFrameProps): import("react").JSX.Element;
+ //# sourceMappingURL=AppFrame.d.ts.map
+diff --git a/lib/types/client/index.d.ts b/lib/types/client/index.d.ts
+index f828b3f6a66ec8249044b920ea4843e524c69a84..cbf0010f02f1f32988bfa15c235b5a8be2046b4a 100644
+--- a/lib/types/client/index.d.ts
++++ b/lib/types/client/index.d.ts
+@@ -50,6 +50,12 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
+             scope: 'session-maybe';
+             owner: ConvOwnerProps;
+         };
++        /** Main content router; absent occupants render the original conversation surface. */
++        'main.surface': {
++            kind: 'single';
++            scope: 'root';
++            owner: MainSurfaceOwnerProps;
++        };
+         /**
+          * The right details column, shown when the layout opens it. OCCUPIED by
+          * ui-conversation's DetailsPanel, which declares the tool-details seat
+@@ -90,6 +96,10 @@ export interface SidebarOwnerProps {
+ /** Conversation owner share: business state and actions belong to the registrant. */
+ export interface ConvOwnerProps {
+ }
++/** Original conversation content supplied to an optional main-surface router. */
++export interface MainSurfaceOwnerProps {
++    defaultContent: import('react').ReactNode;
++}
+ /** Details owner share: empty — sessionId arrives as a framework-standard prop. */
+ export interface DetailsOwnerProps {
+ }

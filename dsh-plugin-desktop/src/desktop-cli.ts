@@ -2,12 +2,12 @@
 
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join } from 'node:path'
-import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { resolveProfileDir } from '@deepseek-ai/dsh-app-boot'
 import { packagedDependencyPath } from './packaged-runtime-path.ts'
 import { assertDesktopProfileName } from './profile-manager.ts'
 import { withoutForwardedDesktopPnpmPolicy } from './pnpm-policy.ts'
 import { installProfilePackageResolver } from './module-resolution.ts'
+import { resolveLoomloomHome } from './loomloom-home.ts'
 
 const RUN_AS_NODE = 'ELECTRON_RUN_AS_NODE'
 const DEFAULT_PROFILE = 'DSH_DESKTOP_DEFAULT_PROFILE'
@@ -68,7 +68,7 @@ export function desktopCliProfileManifestUrl(
   profileName: string,
   environment: NodeJS.ProcessEnv,
 ): string {
-  const home = resolveDshHome(undefined, environment)
+  const home = resolveLoomloomHome(environment)
   const profileRoot = join(home, 'profiles')
   const profileDirectory = resolveProfileDir(profileName, home)
   // resolveProfileDir currently rejects separators. Retain this containment

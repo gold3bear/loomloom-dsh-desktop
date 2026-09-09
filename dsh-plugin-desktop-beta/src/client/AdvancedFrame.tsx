@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
+import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type { PropsRenderSlots, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type {} from './contracts.ts'
@@ -18,7 +19,7 @@ export interface AdvancedFrameInjected {
 
 /** Full enhanced-mode root slot props. */
 export type AdvancedFrameProps = PropsRuntime<'root'>
-  & PropsRenderSlots<'sidebar' | 'conversation' | 'details' | 'shell.overlay'>
+  & PropsRenderSlots<'sidebar' | 'conversation' | 'main.surface' | 'details' | 'shell.overlay'>
   & AdvancedFrameInjected
 
 /** Enhanced-mode owner preserving the original Desktop layout contract. */
@@ -109,6 +110,7 @@ export function DesktopOwnedFrame({
   const onDetailsDrag = useCallback((dx: number) => {
     layout.setDetails(detailsBase.current - dx)
   }, [layout])
+  const conversationContent = renderSlot('conversation', {})
 
   return (
     <div
@@ -127,7 +129,9 @@ export function DesktopOwnedFrame({
           {renderSlot('sidebar', { collapsed, width: sidebarOwnerWidth })}
         </div>
       </aside>
-      <main className="dshDesktopConversationSurface">{renderSlot('conversation', {})}</main>
+      <main className="dshDesktopConversationSurface">
+        {renderSlot('main.surface', { defaultContent: conversationContent }, { fallback: conversationContent })}
+      </main>
       <aside className="dshDesktopDetailsSurface">
         <SessionProvider>{renderSlot('details', {})}</SessionProvider>
       </aside>

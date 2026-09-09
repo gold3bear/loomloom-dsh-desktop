@@ -1,0 +1,10 @@
+# Inserted by `dsh plugin add dsh-plugin-loomloom`. The bundle has both Host
+# and Web Client faces; DSH discovers the latter from package metadata. The
+# authorization seam is a Host provider, not part of the standard Web roster,
+# so this bundle owns the provider row required by its browser/token flow.
+- insert:
+    - id: authorization
+      name: '@deepseek-ai/dsh-authorization'
+    - id: loomloom
+      name: dsh-plugin-loomloom
+      config: {}

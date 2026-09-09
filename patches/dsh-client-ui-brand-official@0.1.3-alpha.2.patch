@@ -1,0 +1,49 @@
+diff --git a/lib/client.js b/lib/client.js
+index 94ac544268102ebdc02c0af15934b08a19d8552e..6a8f2ea574ca4708cd7b8da6a66cbcecb4bfc8dd 100644
+--- a/lib/client.js
++++ b/lib/client.js
+@@ -5,22 +5,37 @@ window.__ModuleLoader__.load({
+ 		var exports = module.exports;
+ 		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
+ 		let react_jsx_runtime = require("react/jsx-runtime");
+-		let _deepseek_ai_dsh_client_ui_primitives = require("@deepseek-ai/dsh-client-ui-primitives");
+ 		//#region lib/types/client/Brand.js
+ 		/**
+-		* Render the official mark with the presentation requested by its host surface.
++		* Render the ShengSuanYun mark with the presentation requested by its host surface.
+ 		* @param props - Host-supplied mark presentation.
+-		* @returns the official whale mark.
++		* @returns the ShengSuanYun mark.
+ 		*/
+ 		function OfficialBrandMark({ size }) {
+-			return (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.FishLogo, { size });
++			return (0, react_jsx_runtime.jsxs)("svg", {
++				width: size,
++				height: size,
++				viewBox: "0 0 375 375",
++				"aria-hidden": "true",
++				focusable: "false",
++				children: [(0, react_jsx_runtime.jsx)("path", {
++					fill: "#5742ee",
++					d: "M26.91 115.82a37 37 0 0 1 1.25-9.41 36 36 0 0 1 6.28-12.74 36 36 0 0 1 10.67-9.37l124.25-71.74a37 37 0 0 1 8.78-3.63 36.6 36.6 0 0 1 27.63 3.63L330.02 84.3a37 37 0 0 1 10.67 9.37 37 37 0 0 1 4.76 8.22 36 36 0 0 1 2.46 9.18q.32 2.37.32 4.75v143.47a36.5 36.5 0 0 1-18.21 31.53l-124.25 71.74a36 36 0 0 1-8.78 3.63 36.5 36.5 0 0 1-27.63-3.63L45.11 290.82a36.3 36.3 0 0 1-15.41-17.6 37 37 0 0 1-2.79-13.93Z"
++				}), (0, react_jsx_runtime.jsx)("path", {
++					fill: "#fff",
++					d: "M180.44 306.87 90.86 241.3a13.2 13.2 0 0 1-5.39-10.61v-88.3l94.97 69.51Zm14.12 0 89.59-65.57a13.2 13.2 0 0 0 5.38-10.61v-88.3l-94.97 69.51ZM180.1 71.17l-87.88 59.95 94.97 69.5.32-.24.32.25 94.97-69.51-87.88-59.95a13.15 13.15 0 0 0-14.82 0"
++				}), (0, react_jsx_runtime.jsx)("path", {
++					fill: "#5742ee",
++					d: "M190.25 121.74q.03 0 .03-.03a121 121 0 0 1-.28-6.62q-.01-.91.07-1.72c.13-1.37.73-2.82 2.37-2.79.77.02 1.6.33 2.33.69q.9.44 2 1.08 2.43 1.42 4.83 2.85 4.71 2.84 9.38 5.74l.65.39c3.46 2.11 5.9 3.6 8.81 5.5a17 17 0 0 1 1.94 1.44c.43.37.83.93 1 1.47.48 1.59-.81 3-1.9 3.95a39 39 0 0 1-2.5 1.99 731 731 0 0 1-15.18 10.95 56 56 0 0 1-5.37 3.37q-1.07.6-2.37 1.08-.8.3-1.55.42c-1.83.3-2.78-1.26-3.18-2.77q-.3-1.06-.4-2.26c-.17-1.9-.29-4.18-.36-5.61q-.01-.46-.12-.86a1 1 0 0 0-.6-.71 7 7 0 0 0-2.01-.38l-.75-.03a56 56 0 0 0-3.53.03l-6.1.21q-1.32.05-5.81.08-3.7.02-7.68.25c-2.43.13-4.86.39-7.3.48-.79.03-1.68.02-2.43-.23-1.15-.38-1.83-1.3-2.23-2.42a11 11 0 0 1-.54-2.14c-.28-1.9-.34-3.84-.29-5.76.03-.72.1-1.41.32-2.1.88-2.68 3.79-3.19 6.22-3.45l2.32-.2q7.34-.6 13.1-.96l.75-.05 7.34-.52c3-.2 6.01-.28 9.02-.36"
++				})]
++			});
+ 		}
+ 		/**
+-		* Render the official name artwork without its independently slotted mark.
+-		* @returns the official name wordmark.
++		* Render the ShengSuanYun name beside its independently slotted mark.
++		* @returns the ShengSuanYun name.
+ 		*/
+ 		function OfficialBrandName() {
+-			return (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.BrandWordmark, { includeMark: false });
++			return (0, react_jsx_runtime.jsx)("span", { children: "胜算云" });
+ 		}
+ 		//#endregion
+ 		//#region lib/types/client/index.js
