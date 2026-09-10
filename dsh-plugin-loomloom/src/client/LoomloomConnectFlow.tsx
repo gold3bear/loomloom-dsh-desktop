@@ -29,7 +29,7 @@ export interface LoomloomConnectFlowProps extends PropsLocale<'loomloom'> {
   readonly onCreateFirstChat?: () => void
 }
 
-const pollIntervalMs = 1_200
+const pollIntervalMs = 500
 
 function delay(signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -157,7 +157,6 @@ export function LoomloomConnectFlow({
           sessionRef.current = undefined
           authorizationUrlRef.current = undefined
           setStage('connected')
-          void refresh()
           onConnected?.()
           return
         }

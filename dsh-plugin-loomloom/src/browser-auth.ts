@@ -268,6 +268,11 @@ export async function verifyLoomCredential(tokenValue: string, config: ResolvedL
 
 /** Verifies both Loom and Router access for callers that do not expose progress. */
 export async function verifyBrowserCredential(tokenValue: string, config: ResolvedLoomConfig, signal: AbortSignal): Promise<readonly string[]> {
-  await verifyLoomCredential(tokenValue, config, signal)
-  return await verifyShengsuanyunRouterCredential(tokenValue, signal)
+  const [loom, router] = await Promise.allSettled([
+    verifyLoomCredential(tokenValue, config, signal),
+    verifyShengsuanyunRouterCredential(tokenValue, signal),
+  ])
+  if (loom.status === 'rejected') throw loom.reason
+  if (router.status === 'rejected') throw router.reason
+  return router.value
 }

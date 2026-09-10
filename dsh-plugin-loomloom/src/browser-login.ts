@@ -99,16 +99,18 @@ export class LoomBrowserLoginService {
       if (this.final(session.state)) return
       session.state = 'verifying-loom'
       try {
-        await verifyLoomCredential(token, this.config, controller.signal)
-      } catch (cause) {
+        const [loomResult, routerResult] = await Promise.allSettled([
+          verifyLoomCredential(token, this.config, controller.signal),
+          verifyShengsuanyunRouterCredential(token, controller.signal),
+        ])
         if (controller.signal.aborted) { this.finish(session, 'cancelled', 'authorization-cancelled'); return }
-        this.finish(session, 'failed', 'loom-validation-failed')
-        return
-      }
-      session.state = 'verifying-router'
-      try {
-        const modelIds = await verifyShengsuanyunRouterCredential(token, controller.signal)
-        if (controller.signal.aborted) { this.finish(session, 'cancelled', 'authorization-cancelled'); return }
+        if (loomResult.status === 'rejected') {
+          this.finish(session, 'failed', 'loom-validation-failed')
+          return
+        }
+        if (routerResult.status === 'rejected') throw routerResult.reason
+        const modelIds = routerResult.value
+        session.state = 'verifying-router'
         session.modelIds = modelIds
         await this.writeCredential(session, token)
         if (controller.signal.aborted) {

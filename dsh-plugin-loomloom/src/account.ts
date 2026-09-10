@@ -94,12 +94,19 @@ export function createLoomAccountReaderWithToken(
   return async () => {
     const token = await resolveToken()
     if (token === undefined || token.trim() === '') throw new Error('loomloom account is not configured')
-    const response = await fetch(ACCOUNT_API_URL, {
+    const responsePromise = fetch(ACCOUNT_API_URL, {
       headers: {
         accept: 'application/json',
         'x-token': token.trim(),
       },
     })
+    const creatorPromise = api.request('/creators/me/marketListings?pageSize=1')
+      .then(payload => listingItems(payload).length > 0)
+      .catch(cause => {
+        if (optionalRoleFailure(cause)) return false
+        return undefined
+      })
+    const response = await responsePromise
     const body = await response.text()
     if (body.length > MAX_ACCOUNT_RESPONSE_BYTES) throw new Error('loomloom account response exceeded size limit')
     if (!response.ok) {
@@ -111,13 +118,7 @@ export function createLoomAccountReaderWithToken(
     } catch {
       throw new Error('loomloom account returned invalid JSON')
     }
-    let isCreator: boolean | undefined
-    try {
-      isCreator = listingItems(await api.request('/creators/me/marketListings?pageSize=1')).length > 0
-    } catch (cause) {
-      if (!optionalRoleFailure(cause)) isCreator = undefined
-      else isCreator = false
-    }
+    const isCreator = await creatorPromise
     return normalizeAccount(userPayload, isCreator)
   }
 }
