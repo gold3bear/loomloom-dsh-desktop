@@ -41,6 +41,7 @@ export type LoomloomLocaleKey =
   | 'signOut'
   | 'signingOut'
   | 'refresh'
+  | 'loadMore'
   | 'loading'
   | 'empty'
   | 'unavailable'
@@ -124,6 +125,7 @@ export const zh: Record<LoomloomLocaleKey, string> = {
   signOut: '退出登录',
   signingOut: '正在退出…',
   refresh: '刷新',
+  loadMore: '加载更多',
   loading: '正在加载…',
   empty: '当前账户没有可显示的 SkillBot。',
   unavailable: '暂不可执行',
@@ -208,6 +210,7 @@ export const en: Record<LoomloomLocaleKey, string> = {
   signOut: 'Sign out',
   signingOut: 'Signing out…',
   refresh: 'Refresh',
+  loadMore: 'Load more',
   loading: 'Loading…',
   empty: 'No SkillBots are available for this account.',
   unavailable: 'Unavailable',

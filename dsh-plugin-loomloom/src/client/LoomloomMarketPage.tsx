@@ -2,9 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import {
   executeSkillbot,
-  readBootstrap,
+  readCredentialStatus,
   readSkillbot,
-  readSkillbots,
+  readSkillbotsPage,
   quoteSkillbot,
   type LoomField,
   type LoomListing,
@@ -41,12 +41,14 @@ function responseRunId(value: unknown): string | undefined {
 export function LoomloomMarketPage({ t }: LoomloomMarketPageProps) {
   const [configured, setConfigured] = useState(false)
   const [listings, setListings] = useState<readonly LoomListing[]>([])
+  const [nextPageToken, setNextPageToken] = useState<string | undefined>()
   const [selected, setSelected] = useState<LoomSkillbotDetail | undefined>()
   const [rows, setRows] = useState<readonly Record<string, unknown>[]>([{}])
   const [quote, setQuote] = useState<CurrentQuote | undefined>()
   const [runId, setRunId] = useState<string | undefined>()
   const [loading, setLoading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState<string | undefined>()
   const inputRevision = useRef(0)
   const executionPending = useRef(false)
@@ -55,15 +57,37 @@ export function LoomloomMarketPage({ t }: LoomloomMarketPageProps) {
     setLoading(true)
     setError(undefined)
     try {
-      const bootstrap = await readBootstrap()
-      setConfigured(bootstrap.credential.configured)
-      setListings(bootstrap.credential.configured ? await readSkillbots() : [])
+      const credential = await readCredentialStatus()
+      setConfigured(credential.configured)
+      if (!credential.configured) {
+        setListings([])
+        setNextPageToken(undefined)
+        return
+      }
+      const page = await readSkillbotsPage({ pageSize: 30 })
+      setListings(page.listings)
+      setNextPageToken(page.nextPageToken)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t('error'))
     } finally {
       setLoading(false)
     }
   }, [t])
+
+  const loadMore = async (): Promise<void> => {
+    if (nextPageToken === undefined || loadingMore) return
+    setLoadingMore(true)
+    setError(undefined)
+    try {
+      const page = await readSkillbotsPage({ pageSize: 30, pageToken: nextPageToken })
+      setListings(previous => [...previous, ...page.listings])
+      setNextPageToken(page.nextPageToken)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t('error'))
+    } finally {
+      setLoadingMore(false)
+    }
+  }
 
   useEffect(() => {
     void load()
@@ -138,7 +162,7 @@ export function LoomloomMarketPage({ t }: LoomloomMarketPageProps) {
                   ? <div className="loomloomMarketList">
                     <div className="loomloomMarketSectionHead">
                       <h3>{t('marketSkillbots')}</h3>
-                      <button className="loomloomButton" type="button" onClick={() => void load()} disabled={loading}>{t('refresh')}</button>
+                      <button className="loomloomButton" type="button" onClick={() => void load()} disabled={loading || loadingMore}>{t('refresh')}</button>
                     </div>
                     {loading
                       ? <p className="loomloomFlowDescription">{t('loading')}</p>
@@ -152,6 +176,11 @@ export function LoomloomMarketPage({ t }: LoomloomMarketPageProps) {
                         </button>
                       ))}
                     {!loading && listings.length === 0 && <p className="loomloomFlowDescription">{t('marketEmpty')}</p>}
+                    {!loading && nextPageToken !== undefined && (
+                      <button className="loomloomButton" type="button" onClick={() => void loadMore()} disabled={loadingMore}>
+                        {loadingMore ? t('loading') : t('loadMore')}
+                      </button>
+                    )}
                   </div>
                   : <div className="loomloomMarketDetail">
                     <button className="loomloomMarketBack" type="button" onClick={() => { setSelected(undefined); setQuote(undefined); setRunId(undefined) }}>← {t('backToMarket')}</button>

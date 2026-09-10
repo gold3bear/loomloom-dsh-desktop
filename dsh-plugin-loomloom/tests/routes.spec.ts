@@ -243,6 +243,15 @@ test('market list reads the public SkillBot catalog instead of creator-owned lis
   } finally { await server.close() }
 })
 
+test('market list forwards bounded pagination parameters', async () => {
+  const server = await startServer({ apiResponse: { items: [] } })
+  try {
+    const result = await read(server, '/api/loomloom/market?pageSize=30&pageToken=opaque-next&keyword=writer', { host: `127.0.0.1:${server.port}` })
+    assert.equal(result.status, 200)
+    assert.deepEqual(server.calls, [{ path: '/marketListings?pageSize=30&pageToken=opaque-next&keyword=writer' }])
+  } finally { await server.close() }
+})
+
 test('market quote and execute routes enforce bounded rows and explicit confirmation', async () => {
   const server = await startServer({ apiResponse: { runId: 'run-1', status: 'queued' } })
   try {

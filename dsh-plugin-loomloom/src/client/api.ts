@@ -60,6 +60,11 @@ export interface LoomListing {
   readonly fixedFee?: string
 }
 
+export interface LoomSkillbotPage {
+  readonly listings: readonly LoomListing[]
+  readonly nextPageToken?: string
+}
+
 export interface LoomField {
   readonly key: string
   readonly label: string
@@ -317,8 +322,30 @@ export async function cancelBrowserLogin(sessionId: string, signal?: AbortSignal
   await postJson<{ readonly cancelled?: boolean }>(url, signal)
 }
 
+export async function readSkillbotsPage(options: {
+  readonly pageSize?: number
+  readonly pageToken?: string
+  readonly signal?: AbortSignal
+} = {}): Promise<LoomSkillbotPage> {
+  const query = new URLSearchParams({ pageSize: String(options.pageSize ?? 30) })
+  if (options.pageToken !== undefined && options.pageToken !== '') {
+    query.set('pageToken', options.pageToken)
+  }
+  const payload = await readJson<unknown>(`/api/loomloom/market?${query.toString()}`, options.signal)
+  const root = record(payload)
+  const data = record(root.data)
+  const nextPageToken = string(root.nextPageToken ?? root.next_page_token ?? data.nextPageToken ?? data.next_page_token)
+  return {
+    listings: items(payload).map(listing),
+    ...(nextPageToken === '' ? {} : { nextPageToken }),
+  }
+}
+
 export async function readSkillbots(signal?: AbortSignal): Promise<readonly LoomListing[]> {
-  return items(await readJson<unknown>('/api/loomloom/market', signal)).map(listing)
+  const page = signal === undefined
+    ? await readSkillbotsPage({ pageSize: 100 })
+    : await readSkillbotsPage({ pageSize: 100, signal })
+  return page.listings
 }
 
 export async function readSkillbot(listingId: string, signal?: AbortSignal): Promise<LoomSkillbotDetail> {

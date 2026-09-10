@@ -133,7 +133,18 @@ export function registerLoomRoutes(
     }),
     register(`${PREFIX}/market`, async (req, res) => {
       if (req.method !== 'GET' || !requireOrigin(req, res)) return
-      try { sendJson(res, 200, await api.request('/marketListings?pageSize=100')) } catch (cause) { apiFailure(res, cause) }
+      const query = new URL(req.url ?? '/', 'http://localhost').searchParams
+      const rawPageSize = Number(query.get('pageSize') ?? '100')
+      if (!Number.isInteger(rawPageSize) || rawPageSize < 1 || rawPageSize > 100) {
+        sendJson(res, 400, { error: 'pageSize must be an integer from 1 to 100' })
+        return
+      }
+      const upstream = new URLSearchParams({ pageSize: String(rawPageSize) })
+      const pageToken = query.get('pageToken')
+      if (pageToken !== null && pageToken !== '') upstream.set('pageToken', pageToken)
+      const keyword = query.get('keyword')
+      if (keyword !== null && keyword !== '') upstream.set('keyword', keyword)
+      try { sendJson(res, 200, await api.request(`/marketListings?${upstream.toString()}`)) } catch (cause) { apiFailure(res, cause) }
     }),
     register(`${PREFIX}/market/skillbot`, async (req, res) => {
       if (req.method !== 'GET' || !requireOrigin(req, res)) return

@@ -10,6 +10,7 @@ import {
   readCredentialStatus,
   readRun,
   readRuns,
+  readSkillbotsPage,
   readSkillbot,
   readSkillbots,
   quoteSkillbot,
@@ -33,7 +34,23 @@ test('client maps market list variants without exposing credential source detail
   }
   assert.deepEqual(await readCredentialStatus(), { configured: true })
   assert.deepEqual(await readSkillbots(), [{ id: 'listing-1', name: 'Writer', description: '', available: true, fixedFee: '12.5' }])
-  assert.deepEqual(urls, ['/api/loomloom/credentials', '/api/loomloom/market'])
+  assert.deepEqual(urls, ['/api/loomloom/credentials', '/api/loomloom/market?pageSize=100'])
+})
+
+test('client reads a bounded market page and preserves its opaque next-page token', async () => {
+  const urls: string[] = []
+  globalThis.fetch = async input => {
+    urls.push(String(input))
+    return new Response(JSON.stringify({
+      items: [{ id: 'listing-1', displayName: 'Writer', executionAvailabilityStatus: 'AVAILABLE' }],
+      nextPageToken: 'opaque-next',
+    }))
+  }
+  assert.deepEqual(await readSkillbotsPage({ pageSize: 30, pageToken: 'opaque-prev' }), {
+    listings: [{ id: 'listing-1', name: 'Writer', description: '', available: true }],
+    nextPageToken: 'opaque-next',
+  })
+  assert.equal(urls[0], '/api/loomloom/market?pageSize=30&pageToken=opaque-prev')
 })
 
 test('client maps a nested detail and public input schema only', async () => {
