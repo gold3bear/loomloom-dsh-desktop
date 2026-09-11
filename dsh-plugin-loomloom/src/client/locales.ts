@@ -73,14 +73,33 @@ export type LoomloomLocaleKey =
   | 'marketTitle'
   | 'marketSkillbots'
   | 'marketEmpty'
-  | 'backToMarket'
-  | 'skillbot'
   | 'free'
   | 'selectPlaceholder'
-  | 'getQuote'
-  | 'estimatedPayable'
-  | 'confirmExecute'
-  | 'executionSubmitted'
+  | 'storefrontUnconfigured'
+  | 'storefrontCreatorKeyMissing'
+  | 'storefrontUnconfiguredHint'
+  | 'storefrontUnavailable'
+  | 'staleStorefront'
+  | 'storefrontRefreshFailed'
+  | 'versionLabel'
+  | 'updatedAtLabel'
+  | 'creatorLabel'
+  | 'closeCall'
+  | 'requiredMissing'
+  | 'chooseFile'
+  | 'uploading'
+  | 'uploadFailed'
+  | 'clearFile'
+  | 'previewInputs'
+  | 'previewTitle'
+  | 'callInChat'
+  | 'promptInvocation'
+  | 'promptNoInput'
+  | 'authRequired'
+  | 'authContinueHint'
+  | 'credentialUnavailable'
+  | 'sendFailed'
+  | 'preparingCall'
 
 export const zh: Record<LoomloomLocaleKey, string> = {
   tab: 'Loomloom',
@@ -157,14 +176,41 @@ export const zh: Record<LoomloomLocaleKey, string> = {
   marketTitle: '云端 SkillBot 市场',
   marketSkillbots: '可用技能体',
   marketEmpty: '当前没有可用 SkillBot。',
-  backToMarket: '返回市场',
-  skillbot: '技能体',
   free: '免费',
   selectPlaceholder: '请选择',
-  getQuote: '获取报价',
-  estimatedPayable: '预计应付',
-  confirmExecute: '确认并执行',
-  executionSubmitted: '已提交运行',
+  storefrontUnconfigured: '此构建尚未配置店面。',
+  storefrontCreatorKeyMissing: '店面需要创作者凭据来获取作品列表，但当前环境未提供。请配置后重启应用。',
+  storefrontUnconfiguredHint: '客户端只展示构建期配置的已上架 SkillBot；请联系维护者补充 storefrontListingIds。',
+  storefrontUnavailable: '有 {count} 个 SkillBot 已下架，不再展示。',
+  staleStorefront: '当前显示的是上次缓存结果，刷新未成功。',
+  storefrontRefreshFailed: '店面刷新失败：{message}',
+  versionLabel: '版本',
+  updatedAtLabel: '更新时间',
+  creatorLabel: '创作者',
+  closeCall: '关闭',
+  requiredMissing: '请先填写所有必填项。',
+  chooseFile: '选择文件',
+  uploading: '正在上传…',
+  uploadFailed: '文件上传失败，请重试。',
+  clearFile: '移除',
+  promptInvocation: [
+    '请通过 Loomloom 工具调用云端 SkillBot。',
+    '- SkillBot：{name}',
+    '- listing id：{listingId}',
+    '- 我已填写的输入：',
+    '{input}',
+    '',
+    '请依次执行：先用 loomloom_get_skillbot 读取字段并校验；再用 loomloom_prepare_execution 生成草稿并把预估费用告诉我；经我确认后用 loomloom_execute_skillbot 执行；最后用 loomloom_get_run 与 loomloom_get_run_results 汇总结果，并把结果整理成易读的表格。',
+  ].join('\n'),
+  promptNoInput: '（我尚未填写输入，请先向我收集必填项）',
+  previewInputs: '预览输入项',
+  previewTitle: '输入项',
+  callInChat: '在对话中调用',
+  authRequired: '调用云端 SkillBot 前需要先连接胜算云。',
+  authContinueHint: '授权成功后会自动回到对话并继续这次调用。',
+  credentialUnavailable: '无法确认胜算云授权状态，请重试。',
+  sendFailed: '未能在对话中发起调用。',
+  preparingCall: '正在发起…',
 }
 
 export const en: Record<LoomloomLocaleKey, string> = {
@@ -242,12 +288,39 @@ export const en: Record<LoomloomLocaleKey, string> = {
   marketTitle: 'Cloud SkillBot Market',
   marketSkillbots: 'Available SkillBots',
   marketEmpty: 'No SkillBots are currently available.',
-  backToMarket: 'Back to market',
-  skillbot: 'SkillBot',
   free: 'Free',
   selectPlaceholder: 'Select an option',
-  getQuote: 'Get quote',
-  estimatedPayable: 'Estimated payable',
-  confirmExecute: 'Confirm and execute',
-  executionSubmitted: 'Run submitted',
+  storefrontUnconfigured: 'No storefront is configured for this build.',
+  storefrontCreatorKeyMissing: 'The storefront needs a creator credential to list their SkillBots, and the environment did not provide one. Configure it and restart.',
+  storefrontUnconfiguredHint: 'This client only presents SkillBots fixed at build time; ask the maintainer to set storefrontListingIds.',
+  storefrontUnavailable: '{count} SkillBot(s) are no longer listed and have been hidden.',
+  staleStorefront: 'Showing the last cached result; the refresh did not succeed.',
+  storefrontRefreshFailed: 'The storefront refresh failed: {message}',
+  versionLabel: 'Version',
+  updatedAtLabel: 'Updated',
+  creatorLabel: 'Creator',
+  closeCall: 'Close',
+  requiredMissing: 'Fill in every required field first.',
+  chooseFile: 'Choose file',
+  uploading: 'Uploading…',
+  uploadFailed: 'The file could not be uploaded. Please try again.',
+  clearFile: 'Remove',
+  promptInvocation: [
+    'Please invoke the cloud SkillBot through the Loomloom tools.',
+    '- SkillBot: {name}',
+    '- listing id: {listingId}',
+    '- inputs I filled in:',
+    '{input}',
+    '',
+    'Then proceed in order: read the fields with loomloom_get_skillbot and validate them; create a draft with loomloom_prepare_execution and tell me the estimated fee; execute with loomloom_execute_skillbot once I approve; finally summarise with loomloom_get_run and loomloom_get_run_results, presenting the result as a readable table.',
+  ].join('\n'),
+  promptNoInput: '(I have not filled in any inputs yet; collect the required ones from me first.)',
+  previewInputs: 'Preview inputs',
+  previewTitle: 'Inputs',
+  callInChat: 'Call in chat',
+  authRequired: 'Connecting ShengSuanYun is required before calling a cloud SkillBot.',
+  authContinueHint: 'After authorizing, this call continues in the conversation automatically.',
+  credentialUnavailable: 'The ShengSuanYun connection could not be confirmed. Please try again.',
+  sendFailed: 'The call could not be started in the conversation.',
+  preparingCall: 'Starting…',
 }

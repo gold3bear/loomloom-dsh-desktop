@@ -88,8 +88,15 @@ const css = `
 .loomloomMarketSectionHead, .loomloomMarketDetailTitle, .loomloomMarketQuote { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .loomloomMarketSectionHead h3 { margin: 0; font-size: 15px; line-height: 22px; }
 .loomloomMarketList { display: grid; gap: 8px; }
-.loomloomMarketItem { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 12px 14px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 7px; background: var(--dsw-alias-bg-layer-3); color: inherit; font: inherit; text-align: left; cursor: pointer; }
-.loomloomMarketItem:hover, .loomloomMarketItem:focus-visible { border-color: var(--dsw-alias-state-business-primary); outline: none; }
+/* The row is a container, not a button: the preview control sits beside the row
+   action, and nesting one button inside another is invalid. */
+.loomloomMarketItem { display: flex; align-items: center; gap: 4px; width: 100%; padding: 0 6px 0 0; border: 1px solid var(--dsw-alias-border-l1); border-radius: 7px; background: var(--dsw-alias-bg-layer-3); }
+.loomloomMarketItem:hover, .loomloomMarketItem:focus-within { border-color: var(--dsw-alias-state-business-primary); }
+.loomloomMarketItemOpen { display: flex; flex: 1 1 auto; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; padding: 12px 14px; border: 0; border-radius: 7px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.loomloomMarketItemOpen:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: -2px; }
+.loomloomMarketPreview { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; width: 44px; height: 44px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--dsw-alias-label-secondary); font: inherit; font-size: 15px; cursor: pointer; }
+.loomloomMarketPreview:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+.loomloomMarketPreview:focus-visible { border-color: var(--dsw-alias-state-business-primary); color: var(--dsw-alias-label-primary); outline: none; }
 .loomloomMarketItemMain { display: grid; min-width: 0; gap: 3px; }
 .loomloomMarketItemMain strong, .loomloomMarketItemMain small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .loomloomMarketItemMain strong { font-size: 13px; }
@@ -106,6 +113,24 @@ const css = `
 .loomloomMarketQuote strong { color: var(--dsw-alias-label-primary); font-variant-numeric: tabular-nums; }
 .loomloomMarketSuccess { padding: 10px 12px; border: 1px solid var(--dsw-alias-state-success); border-radius: 7px; color: var(--dsw-alias-state-success); font-size: 12px; }
 .loomloomMarketSuccess code { color: inherit; }
+.loomloomMarketNotice { padding: 10px 12px; border: 1px solid var(--dsw-alias-state-warning); border-radius: 7px; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; }
+.loomloomMarketFacts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 14px; margin: 0; padding: 12px 14px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 7px; background: var(--dsw-alias-bg-layer-3); }
+.loomloomMarketFacts dt { color: var(--dsw-alias-label-tertiary); font-size: 12px; }
+.loomloomMarketFacts dd { margin: 0; overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.loomloomCallOverlay { position: fixed; z-index: 2000; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgb(0 0 0 / 28%); }
+.loomloomCallDialog { width: min(620px, calc(100vw - 48px)); max-height: min(760px, calc(100vh - 48px)); overflow: auto; padding: 20px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; background: var(--dsw-alias-bg-layer-1); box-shadow: 0 14px 40px rgb(0 0 0 / 20%); }
+.loomloomCallHeader { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
+.loomloomCallHeader h3 { margin: 0; font-size: 17px; line-height: 24px; }
+.loomloomFileRow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.loomloomFileRow small { color: var(--dsw-alias-label-tertiary); font-size: 12px; }
+.loomloomRunRows { display: grid; gap: 6px; margin-top: 10px; }
+.loomloomRunRow { display: grid; grid-template-columns: auto auto minmax(0, 1fr); align-items: start; gap: 10px; padding: 10px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 7px; background: var(--dsw-alias-bg-layer-3); font-size: 12px; }
+.loomloomRunRow[data-failed='true'] { border-color: var(--dsw-alias-state-warning); }
+.loomloomRunRowIndex { color: var(--dsw-alias-label-tertiary); }
+.loomloomRunArtifact { display: grid; gap: 4px; }
+.loomloomRunArtifact pre { margin: 0; max-height: 200px; overflow: auto; padding: 8px; border-radius: 6px; background: var(--dsw-alias-bg-layer-1); font-size: 11px; white-space: pre-wrap; word-break: break-word; }
+.loomloomRunArtifact a { color: var(--dsw-alias-state-business-primary); font-size: 12px; }
+.loomloomRunStep { color: var(--dsw-alias-state-warning); font-size: 11px; }
 @media (max-width: 680px) { .loomloomHeader { align-items: stretch; flex-direction: column; } .loomloomGrid { grid-template-columns: 1fr; } }
 @media (max-width: 720px) { .loomloomMarketHeader { padding: 22px 24px 16px; } .loomloomMarketBody { width: calc(100% - 48px); } }
 `

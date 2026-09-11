@@ -7,4 +7,14 @@
       name: '@deepseek-ai/dsh-authorization'
     - id: loomloom
       name: dsh-plugin-loomloom
-      config: {}
+      config:
+        # The market presents one creator's own catalogue, derived on every refresh
+        # from `GET /creators/me/marketListings`. Name the environment variable that
+        # holds that creator's credential; export it where the app is launched.
+        # If it is missing the storefront stays empty and reports why, rather than
+        # silently falling back to a stale pinned list.
+        #
+        # Alternatively, pin a fixed set instead:
+        #   storefrontListingIds: [<listing id>, ...]
+        # with an optional `LOOMLOOM_STOREFRONT_IDS` (comma-separated) override.
+        creatorKeyEnv: LOOMLOOM_CREATOR_KEY

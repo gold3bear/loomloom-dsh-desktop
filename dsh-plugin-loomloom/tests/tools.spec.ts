@@ -140,8 +140,10 @@ test('returns only run-result counts and output artifacts, never submitted input
     artifacts: [{ id: 'artifact-1', label: 'Copy', mimeType: 'text/plain', accessUrl: 'https://files.example/result.txt', inlineText: '{"score": 95}' }],
   })
   // The inline artifact body is surfaced in the render text, not just a count.
+  // A JSON body is drawn as a field/value table, so the field and its value must
+  // both appear; the raw payload deliberately no longer does.
   const rendered = tool(setup.registered, 'loomloom_get_run_results').output.render({}, result) as Array<{ text: string }>
-  assert.match(rendered.map(block => block.text).join('\n'), /\{"score": 95\}/)
+  assert.match(rendered.map(block => block.text).join('\n'), /\|\s*score\s*\|\s*95\s*\|/u)
 })
 
 test('refuses an unapproved paid execution before the upstream execute call', async () => {

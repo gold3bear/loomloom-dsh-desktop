@@ -5,6 +5,8 @@ import type { LoomCredentialStatus } from './credentials.js'
 import type { LoomBrowserLoginService } from './browser-login.js'
 import type { LoomBootstrap } from './bootstrap.js'
 import type { LoomAccount } from './account.js'
+import type { StorefrontCache } from './storefront-cache.js'
+import type { StorefrontSource } from './storefront.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { LoomApi, LoomApiError, sanitizeDownloadFilename } from './loom-api.js'
 
@@ -78,6 +80,16 @@ function withConfirmationToken(value: unknown, confirmationToken: string): Recor
     ? { ...value as Record<string, unknown>, confirmationToken }
     : { data: value, confirmationToken }
 }
+/**
+ * File inputs publish `value_type: asset_ref`, which is satisfied by uploading
+ * the bytes and submitting the returned `inputAssetId`. Base64 inflates by about
+ * a third, so the request ceiling is set above the decoded file ceiling rather
+ * than reusing the ordinary JSON body cap.
+ */
+const MAX_INPUT_ASSET_BYTES = 4 * 1024 * 1024
+const MAX_INPUT_ASSET_REQUEST_BYTES = 6 * 1024 * 1024
+const BASE64_PATTERN = /^[A-Za-z0-9+/]*={0,2}$/u
+const MEDIA_TYPE_PATTERN = /^[\w.+-]+\/[\w.+-]+$/u
 
 function sendJson(res: ServerResponse, status: number, value: unknown): void {
   res.statusCode = status
@@ -121,6 +133,7 @@ async function requestBody(req: IncomingMessage, maxBytes = MAX_JSON_REQUEST_BYT
   if (!/^application\/json(?:\s*;|$)/iu.test(req.headers['content-type'] ?? '')) {
     throw new LoomApiError(415, 'content-type must be application/json')
   }
+
   let size = 0
   const chunks: Buffer[] = []
   for await (const chunk of req) {
@@ -220,6 +233,24 @@ async function forwardWorkbookTo(
   } catch (cause) { apiFailure(res, cause) }
 }
 
+/**
+ * Optional Host surfaces registered after the original route set.
+ *
+ * These arrived later than the positional dependencies above, and each one is a
+ * separately owned capability rather than another credential reader; grouping
+ * them keeps the call site readable as the surface grows.
+ */
+export interface LoomRouteExtras {
+  /** Last-good storefront over the configured Market listing allow-list. */
+  readonly storefront?: StorefrontCache
+  /**
+   * Which storefront source is live. Published so a caller can tell a derived
+   * creator storefront from a pinned list, and can see a missing creator
+   * credential rather than guessing why the market is empty.
+   */
+  readonly storefrontSource?: StorefrontSource
+}
+
 export function registerLoomRoutes(
   ctx: Context,
   api: LoomApi,
@@ -228,6 +259,7 @@ export function registerLoomRoutes(
   clearCredential?: () => Promise<void>,
   readBootstrap?: () => Promise<LoomBootstrap>,
   readAccount?: () => Promise<LoomAccount>,
+  extras: LoomRouteExtras = {},
 ): () => void {
   const port = ctx.webServer.port
   const quoteDrafts = new QuoteDraftStore()
@@ -302,6 +334,22 @@ export function registerLoomRoutes(
       // Deliberately idempotent: callers must not be able to probe session ids.
       sendJson(res, 200, { cancelled: true })
     }),
+    register(`${PREFIX}/storefront`, async (req, res) => {
+      if (req.method !== 'GET' || !requireOrigin(req, res)) return
+      if (extras.storefront === undefined) { sendJson(res, 503, { error: 'loomloom storefront is unavailable' }); return }
+      // `refresh=1` is the refresh control: it re-reads the Market instead of
+      // serving the cached storefront. Both paths answer 200 so the Client has
+      // one shape to render; a failed refresh still reports the last good
+      // storefront together with `stale` and `error`.
+      const force = new URL(req.url ?? '/', 'http://localhost').searchParams.get('refresh') === '1'
+      try {
+        const result = await extras.storefront.read(force)
+        // The Client renders the reason; the log keeps it discoverable after the
+        // page is gone, which is the only way to diagnose an empty market.
+        if (result.error !== undefined) ctx.logger.warn(`loomloom: storefront refresh failed: ${result.error}`)
+        sendJson(res, 200, { ...result, source: extras.storefrontSource ?? 'none' })
+      } catch (cause) { apiFailure(res, cause) }
+    }),
     register(`${PREFIX}/market`, async (req, res) => {
       if (req.method !== 'GET' || !requireOrigin(req, res)) return
       const query = new URL(req.url ?? '/', 'http://localhost').searchParams
@@ -322,6 +370,29 @@ export function registerLoomRoutes(
       const listingId = new URL(req.url ?? '/', 'http://localhost').searchParams.get('listingId')
       if (listingId === null || !ID_PATTERN.test(listingId)) { sendJson(res, 400, { error: 'invalid listingId' }); return }
       try { sendJson(res, 200, await api.request(`/marketListings/${encodeURIComponent(listingId)}`)) } catch (cause) { apiFailure(res, cause) }
+    }),
+    register(`${PREFIX}/inputAssets`, async (req, res) => {
+      if (req.method !== 'POST' || !requireOrigin(req, res)) return
+      try {
+        const body = await requestBody(req, MAX_INPUT_ASSET_REQUEST_BYTES)
+        const filename = typeof body.filename === 'string' ? body.filename.trim() : ''
+        const contentType = typeof body.contentType === 'string' ? body.contentType.trim() : ''
+        const content = typeof body.content === 'string' ? body.content.trim() : ''
+        if (filename === '' || filename.length > 255) throw new LoomApiError(400, 'filename must be a non-empty name of at most 255 characters')
+        if (!MEDIA_TYPE_PATTERN.test(contentType)) throw new LoomApiError(400, 'contentType must be a media type')
+        // Validate the encoding before decoding: Buffer.from(..., 'base64') silently
+        // drops invalid characters, which would upload a truncated file.
+        if (content === '' || content.length % 4 !== 0 || !BASE64_PATTERN.test(content)) {
+          throw new LoomApiError(400, 'content must be base64 data')
+        }
+        if (Buffer.from(content, 'base64').byteLength > MAX_INPUT_ASSET_BYTES) {
+          throw new LoomApiError(413, 'input asset exceeds the upload limit')
+        }
+        sendJson(res, 200, await api.request(
+          '/inputAssets:upload',
+          { method: 'POST', body: JSON.stringify({ content, contentType, filename }) },
+        ))
+      } catch (cause) { apiFailure(res, cause) }
     }),
     register(`${PREFIX}/market/skillbot/quote`, async (req, res) => {
       if (req.method !== 'POST' || !requireOrigin(req, res)) return
