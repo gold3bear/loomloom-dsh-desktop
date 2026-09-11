@@ -25,17 +25,33 @@ interface ExchangeEnvelope {
   readonly code?: unknown
   readonly msg?: unknown
   readonly data?: unknown
+  readonly jwt_token?: unknown
+}
+
+/** The exchanged API key serves Loomloom/Router; the JWT is profile-only. */
+export interface ShengsuanyunBrowserCredential {
+  readonly apiKey: string
+  readonly identityToken?: string
 }
 
 function successCode(value: unknown): boolean {
   return value === 0 || value === '0'
 }
 
-function apiKeyFromEnvelope(payload: ExchangeEnvelope): string | undefined {
+function nonBlankText(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined
+}
+
+function browserCredentialFromEnvelope(payload: ExchangeEnvelope): ShengsuanyunBrowserCredential | undefined {
   const outer = typeof payload.data === 'object' && payload.data !== null ? payload.data as Record<string, unknown> : {}
   const inner = typeof outer.data === 'object' && outer.data !== null ? outer.data as Record<string, unknown> : {}
-  const value = inner.api_key ?? outer.api_key ?? payload.data
-  return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined
+  const apiKey = nonBlankText(inner.api_key ?? outer.api_key ?? payload.data)
+  const identityToken = nonBlankText(inner.jwt_token ?? outer.jwt_token ?? payload.jwt_token)
+  // Older deployments issued only a JWT, which also works as their shared key.
+  const sharedCredential = apiKey ?? identityToken
+  return sharedCredential === undefined
+    ? undefined
+    : { apiKey: sharedCredential, ...(identityToken === undefined ? {} : { identityToken }) }
 }
 
 function token(size: number): string {
@@ -77,7 +93,7 @@ async function exchangeCode(
   callbackUrl: string,
   signal: AbortSignal,
   accountKeysUrl: string,
-): Promise<string> {
+): Promise<ShengsuanyunBrowserCredential> {
   let response: Response
   try {
     const endpoint = new URL(accountKeysUrl)
@@ -98,14 +114,14 @@ async function exchangeCode(
   let payload: ExchangeEnvelope
   try { payload = JSON.parse(body) as ExchangeEnvelope } catch { throw new LoomApiError(502, '胜算云授权响应无效') }
   if (!successCode(payload.code)) throw new LoomApiError(502, '胜算云授权码兑换失败')
-  const value = apiKeyFromEnvelope(payload)
+  const value = browserCredentialFromEnvelope(payload)
   if (value === undefined) throw new LoomApiError(502, '胜算云授权未返回有效凭据')
   return value
 }
 
 export interface BrowserAuthorization {
   readonly url: string
-  readonly result: Promise<string>
+  readonly result: Promise<ShengsuanyunBrowserCredential>
 }
 
 export interface BrowserAuthorizationOptions {
@@ -188,10 +204,10 @@ export async function beginBrowserAuthorization(
   const accountKeysUrl = options.accountKeysUrl ?? ACCOUNT_API_URL
   const verifier = token(32)
   const state = token(16)
-  let settle: (value: string) => void = () => {}
+  let settle: (value: ShengsuanyunBrowserCredential) => void = () => {}
   let reject: (cause: unknown) => void = () => {}
   let consumed = false
-  const result = new Promise<string>((resolve, rejectResult) => { settle = resolve; reject = rejectResult })
+  const result = new Promise<ShengsuanyunBrowserCredential>((resolve, rejectResult) => { settle = resolve; reject = rejectResult })
   const server = createServer((req, res) => {
     const requestUrl = new URL(req.url ?? '/', 'http://127.0.0.1')
     if (req.method !== 'GET' || requestUrl.pathname !== '/callback' || consumed) { callbackPage(res, false); return }

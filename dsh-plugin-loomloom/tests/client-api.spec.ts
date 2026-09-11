@@ -31,10 +31,10 @@ test('client maps market list variants without exposing credential source detail
   const urls: string[] = []
   globalThis.fetch = async input => {
     urls.push(String(input))
-    if (String(input).endsWith('/credentials')) return new Response(JSON.stringify({ configured: true, source: 'authorization-grant' }))
+    if (String(input).endsWith('/credentials')) return new Response(JSON.stringify({ configured: true, source: 'authorization-grant', maskedToken: '····cret' }))
     return new Response(JSON.stringify({ data: { listings: [{ id: 'listing-1', displayName: 'Writer', executionAvailabilityStatus: 'AVAILABLE', taskFixedFee: { amount: '12.5' } }] } }))
   }
-  assert.deepEqual(await readCredentialStatus(), { configured: true })
+  assert.deepEqual(await readCredentialStatus(), { configured: true, maskedToken: '····cret' })
   assert.deepEqual(await readSkillbots(), [{ id: 'listing-1', name: 'Writer', description: '', available: true, fixedFee: '12.5' }])
   assert.deepEqual(urls, ['/api/loomloom/credentials', '/api/loomloom/market?pageSize=100'])
 })

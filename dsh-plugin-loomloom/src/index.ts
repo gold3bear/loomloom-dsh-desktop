@@ -7,12 +7,12 @@ import { registerLoomAuthorization } from './authorization.js'
 import { createLoomAccountReaderWithToken } from './account.js'
 import { createLoomBootstrapReader } from './bootstrap.js'
 import { LoomBrowserLoginService } from './browser-login.js'
-import { clearLoomToken, createLoomCredentialStatusReader, createLoomTokenResolver } from './credentials.js'
+import { clearLoomToken, createLoomCredentialStatusReader, createLoomIdentityTokenResolver, createLoomTokenResolver } from './credentials.js'
 import { LoomApi, resolveLoomConfig, type LoomConfig } from './loom-api.js'
 import { registerLoomRoutes } from './routes.js'
 import { LoomSkillbotService } from './skillbots.js'
 import { createStorefrontCache } from './storefront-cache.js'
-import { createStorefrontReader, envSecret, storefrontSourceFor } from './storefront.js'
+import { createStorefrontReader, envSecret, storefrontCacheKey, storefrontSourceFor } from './storefront.js'
 import { registerLoomTools } from './tools.js'
 
 export const name = 'loomloom'
@@ -24,6 +24,7 @@ export const inject = ['webServer', 'tools', 'credentials', 'authorization', 'ag
 export function apply(ctx: Context, config: LoomConfig = {}): void {
   const resolved = resolveLoomConfig(config)
   const resolveToken = createLoomTokenResolver(ctx, resolved)
+  const resolveIdentityToken = createLoomIdentityTokenResolver(ctx)
   const readCredentialStatus = createLoomCredentialStatusReader(ctx, resolved)
   const api = new LoomApi(resolved, resolveToken)
   const skillbots = new LoomSkillbotService(api)
@@ -33,13 +34,11 @@ export function apply(ctx: Context, config: LoomConfig = {}): void {
   // discover which listings are the creator's; every detail read stays anonymous.
   const creatorKey = envSecret(process.env, resolved.creatorKeyEnv)
   const storefrontSource = storefrontSourceFor(resolved, creatorKey)
-  if (storefrontSource === 'creator-key-missing') {
-    ctx.logger.warn(
-      `loomloom: creatorKeyEnv is "${String(resolved.creatorKeyEnv)}" but that environment variable is not set,`
-      + ' so the storefront cannot derive the creator\'s SkillBots. Export it and restart; the market stays empty until then.',
-    )
+  if (resolved.creatorKeyEnv !== undefined && creatorKey === undefined) {
+    ctx.logger.warn(`loomloom: creatorKeyEnv is "${resolved.creatorKeyEnv}" but that environment variable is not set; using the public Market catalogue`)
   }
   const creatorApi = creatorKey === undefined ? null : new LoomApi(resolved, async () => creatorKey)
+  const publicApi = new LoomApi(resolved, async () => undefined)
   // One line per generation: that the plugin applied at all, and which storefront
   // source is live. Without it an empty market is indistinguishable from a plugin
   // that never loaded.
@@ -56,12 +55,14 @@ export function apply(ctx: Context, config: LoomConfig = {}): void {
       browserLogin,
       () => clearLoomToken(ctx, resolved),
       createLoomBootstrapReader(ctx, resolved, readCredentialStatus, resolveToken),
-      createLoomAccountReaderWithToken(api, resolveToken),
+      createLoomAccountReaderWithToken(api, resolveToken, resolveIdentityToken),
       {
         storefront: createStorefrontCache(
           ctx,
-          createStorefrontReader(api, resolved, resolved.creatorKeyEnv === undefined ? {} : { creator: creatorApi }),
-          { configured: storefrontSource === 'creator' || storefrontSource === 'pinned' },
+          createStorefrontReader(publicApi, resolved, storefrontSource === 'public'
+            ? { publicMarket: true }
+            : storefrontSource === 'creator' ? { creator: creatorApi } : {}),
+          { configured: true, cacheKey: storefrontCacheKey(resolved, creatorKey) },
         ),
         storefrontSource,
       },

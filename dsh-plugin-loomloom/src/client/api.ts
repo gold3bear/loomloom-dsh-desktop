@@ -1,5 +1,6 @@
 export interface LoomCredentialStatus {
   readonly configured: boolean
+  readonly maskedToken?: string
 }
 
 export interface LoomAccount {
@@ -116,10 +117,10 @@ export interface LoomStorefrontEntry extends LoomListing {
  *
  * Mirrors `StorefrontSource` in `src/storefront.ts`. The two cannot share a module
  * (`tsconfig.client.json` scopes the Client program to `src/client/**`), so the
- * union is repeated; `creator-key-missing` is the state that matters, because it
- * means the market is empty for a configuration reason rather than a data one.
+ * union is repeated; `public` is the default fallback when creator discovery is
+ * unavailable.
  */
-export type LoomStorefrontSource = 'creator' | 'pinned' | 'creator-key-missing' | 'none'
+export type LoomStorefrontSource = 'creator' | 'public' | 'pinned' | 'creator-key-missing' | 'none'
 
 export interface LoomStorefront {
   /** False when this build configures no storefront source at all. */
@@ -367,7 +368,10 @@ function detail(value: unknown): unknown {
 
 export async function readCredentialStatus(signal?: AbortSignal): Promise<LoomCredentialStatus> {
   const result = await readJson<LoomCredentialStatus>('/api/loomloom/credentials', signal)
-  return { configured: result.configured === true }
+  return {
+    configured: result.configured === true,
+    ...(typeof result.maskedToken === 'string' && result.maskedToken !== '' ? { maskedToken: result.maskedToken } : {}),
+  }
 }
 
 export async function readAccount(signal?: AbortSignal): Promise<LoomAccount> {
@@ -530,6 +534,7 @@ export async function readStorefront(refresh = false, signal?: AbortSignal): Pro
   const error = string(payload.error)
   const rawSource = payload.source
   const source: LoomStorefrontSource = rawSource === 'creator'
+    || rawSource === 'public'
     || rawSource === 'pinned'
     || rawSource === 'creator-key-missing'
     || rawSource === 'none'

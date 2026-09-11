@@ -5,6 +5,7 @@ import {
   createStorefrontReader,
   envSecret,
   STOREFRONT_CONCURRENCY,
+  storefrontCacheKey,
   storefrontSourceFor,
   type StorefrontEntry,
 } from '../src/storefront.js'
@@ -13,6 +14,25 @@ interface Recorded {
   readonly paths: string[]
   peak: number
 }
+
+test('cache identity separates sources, endpoints, pinned lists and creator credentials without storing secrets', () => {
+  const config = resolveLoomConfig({}, {})
+  const publicKey = storefrontCacheKey(config, undefined)
+  assert.equal(publicKey, storefrontCacheKey(config, undefined))
+  const pinned = resolveLoomConfig({ storefrontListingIds: ['a'] }, {})
+  const creator = resolveLoomConfig({ creatorKeyEnv: 'CREATOR' }, {})
+  const keys = [
+    publicKey,
+    storefrontCacheKey({ ...config, baseUrl: 'https://example.com/loom/v1/' }, undefined),
+    storefrontCacheKey(pinned, undefined),
+    storefrontCacheKey({ ...pinned, storefrontListingIds: ['b'] }, undefined),
+    storefrontCacheKey(creator, 'creator-secret-one'),
+    storefrontCacheKey(creator, 'creator-secret-two'),
+  ]
+  assert.equal(new Set(keys).size, keys.length)
+  assert.ok(keys.every(key => /^[a-f0-9]{64}$/u.test(key)))
+  assert.equal(storefrontCacheKey(creator, undefined), publicKey)
+})
 
 /**
  * A stand-in for the Host API that answers one listing detail per configured id.
@@ -258,14 +278,22 @@ test('a creator with nothing listed yields a configured but empty storefront', a
   assert.deepEqual(detailCalls.paths, [])
 })
 
-test('a missing creator credential does not silently fall back to the pinned list', async () => {
-  const { api, calls } = fakeApi(id => ({ ...LIVE_DETAIL, id }))
-  const reader = createStorefrontReader(api, resolveLoomConfig({ storefrontListingIds: ['pinned'] }), { creator: null })
+test('a missing creator credential falls back to the complete public market', async () => {
+  const calls: string[] = []
+  const api = {
+    async request(path: string): Promise<unknown> {
+      calls.push(path)
+      if (path === '/marketListings?pageSize=100') return { items: [{ ...LIVE_DETAIL, id: 'public-1' }], nextPageToken: 'page-2' }
+      if (path === '/marketListings?pageSize=100&pageToken=page-2') return { items: [{ ...LIVE_DETAIL, id: 'public-2' }] }
+      throw new Error(`unexpected path ${path}`)
+    },
+  }
+  const reader = createStorefrontReader(api as never, resolveLoomConfig({ creatorKeyEnv: 'CREATOR_KEY', storefrontListingIds: ['pinned'] }), { publicMarket: true })
 
-  // Falling back would make a misconfigured deployment look healthy while quietly
-  // no longer tracking new publications.
-  assert.deepEqual(await reader(), { configured: false, entries: [], unavailable: [] })
-  assert.deepEqual(calls.paths, [])
+  const result = await reader()
+  assert.equal(result.configured, true)
+  assert.deepEqual(result.entries.map(item => item.id), ['public-1', 'public-2'])
+  assert.deepEqual(calls, ['/marketListings?pageSize=100', '/marketListings?pageSize=100&pageToken=page-2'])
 })
 
 test('the reported source distinguishes derived, pinned and unset storefronts', () => {
@@ -274,8 +302,8 @@ test('the reported source distinguishes derived, pinned and unset storefronts', 
   const creator = resolveLoomConfig({ creatorKeyEnv: 'LOOMLOOM_CREATOR_KEY' }, {})
 
   assert.equal(storefrontSourceFor(pinned, undefined), 'pinned')
-  assert.equal(storefrontSourceFor(empty, undefined), 'none')
-  assert.equal(storefrontSourceFor(creator, undefined), 'creator-key-missing')
+  assert.equal(storefrontSourceFor(empty, undefined), 'public')
+  assert.equal(storefrontSourceFor(creator, undefined), 'public')
   assert.equal(storefrontSourceFor(creator, 'secret'), 'creator')
   // Creator mode is authoritative: pinning ids alongside it does not downgrade it.
   assert.equal(

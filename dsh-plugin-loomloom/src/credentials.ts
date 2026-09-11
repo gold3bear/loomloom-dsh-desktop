@@ -8,12 +8,31 @@ export interface LoomCredentialStatus {
   readonly configured: boolean
   /** A non-secret origin hint, used only by the local DSH settings UI. */
   readonly source?: 'development-token' | 'reference' | 'authorization-grant'
+  /** Last four characters of the shared key, for an explicit identity fallback. */
+  readonly maskedToken?: string
+}
+
+function maskToken(token: string): string {
+  const normalized = token.trim()
+  return normalized.length < 4 ? '····' : `····${normalized.slice(-4)}`
 }
 
 function tokenFromRecord(record: CredentialRecord | undefined): string | undefined {
   if (record?.kind !== 'grant' || typeof record.payload !== 'object' || record.payload === null) return undefined
   const token = (record.payload as Record<string, unknown>).token
   return typeof token === 'string' && token.trim() !== '' ? token.trim() : undefined
+}
+
+function identityTokenFromRecord(record: CredentialRecord | undefined): string | undefined {
+  if (record?.kind !== 'grant' || typeof record.payload !== 'object' || record.payload === null) return undefined
+  const token = (record.payload as Record<string, unknown>).identityToken
+  return typeof token === 'string' && token.trim() !== '' ? token.trim() : undefined
+}
+
+function grantPayload(record: CredentialRecord | undefined): Record<string, unknown> {
+  return record?.kind === 'grant' && typeof record.payload === 'object' && record.payload !== null && !Array.isArray(record.payload)
+    ? { ...record.payload as Record<string, unknown> }
+    : {}
 }
 
 /** Resolves a fresh secret for every upstream request; values never cross the Client boundary. */
@@ -30,6 +49,16 @@ export function createLoomTokenResolver(ctx: Context, config: ResolvedLoomConfig
   }
 }
 
+/** Reads the browser-only JWT used exclusively for the account profile endpoint. */
+export function createLoomIdentityTokenResolver(ctx: Context): () => Promise<string | undefined> {
+  const records = ctx.credentials as typeof ctx.credentials & {
+    readRecord?: (key: typeof LOOMLOOM_CREDENTIAL_KEY) => Promise<CredentialRecord | undefined>
+  }
+  return async () => records.readRecord === undefined
+    ? undefined
+    : identityTokenFromRecord(await records.readRecord(LOOMLOOM_CREDENTIAL_KEY))
+}
+
 /**
  * Persist the common ShengSuanYun key under its credential reference.  DSH's
  * custom provider UI derives the same reference from provider id
@@ -38,6 +67,24 @@ export function createLoomTokenResolver(ctx: Context, config: ResolvedLoomConfig
  */
 export async function storeLoomToken(ctx: Context, config: ResolvedLoomConfig, token: string): Promise<void> {
   await ctx.credentials.set(credentialRef(config.tokenRef), token)
+}
+
+/** Replaces the profile JWT without exposing it through a shared key reference. */
+export async function replaceLoomIdentityToken(ctx: Context, token: string | undefined): Promise<void> {
+  const records = ctx.credentials as typeof ctx.credentials & {
+    modifyRecord?: (
+      key: typeof LOOMLOOM_CREDENTIAL_KEY,
+      mutate: (current: CredentialRecord | undefined) => Promise<CredentialRecord | undefined>,
+    ) => Promise<CredentialRecord | undefined>
+  }
+  // Compatibility with the first desktop runtime, which did not expose record writes.
+  if (records.modifyRecord === undefined) return
+  await records.modifyRecord(LOOMLOOM_CREDENTIAL_KEY, async current => {
+    const payload = grantPayload(current)
+    if (token === undefined) delete payload.identityToken
+    else payload.identityToken = token
+    return Object.keys(payload).length === 0 ? undefined : { kind: 'grant', payload }
+  })
 }
 
 /** Remove the common reference and any legacy plugin grant during explicit logout. */
@@ -57,17 +104,28 @@ export function createLoomCredentialStatusReader(
 ): () => Promise<LoomCredentialStatus> {
   const ref = credentialRef(config.tokenRef)
   return async () => {
-    if (config.token !== undefined) return { configured: true, source: 'development-token' }
+    if (config.token !== undefined) return { configured: true, source: 'development-token', maskedToken: maskToken(config.token) }
     const reference = await ctx.credentials.describe(ref)
-    if (reference.configured) return { configured: true, source: 'reference' }
+    if (reference.configured) {
+      const credentials = ctx.credentials as typeof ctx.credentials & {
+        resolve?: (key: ReturnType<typeof credentialRef>) => Promise<{ readonly value: string } | undefined>
+      }
+      const resolved = credentials.resolve === undefined ? undefined : await credentials.resolve(ref)
+      return {
+        configured: true,
+        source: 'reference',
+        ...(resolved?.value === undefined ? {} : { maskedToken: maskToken(resolved.value) }),
+      }
+    }
     // DSH 0.1.0-rc.7 exposes readRecord but not describeRecord. This Host-only
     // read is reduced immediately to presence; no payload is returned to the Client.
     const records = ctx.credentials as typeof ctx.credentials & {
       readRecord?: (key: typeof LOOMLOOM_CREDENTIAL_KEY) => Promise<CredentialRecord | undefined>
     }
     const grant = records.readRecord === undefined ? undefined : await records.readRecord(LOOMLOOM_CREDENTIAL_KEY)
-    return tokenFromRecord(grant) !== undefined
-      ? { configured: true, source: 'authorization-grant' }
+    const token = tokenFromRecord(grant)
+    return token !== undefined
+      ? { configured: true, source: 'authorization-grant', maskedToken: maskToken(token) }
       : { configured: false }
   }
 }

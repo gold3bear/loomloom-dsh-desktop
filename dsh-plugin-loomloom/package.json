@@ -45,7 +45,7 @@
   "scripts": {
     "build": "node scripts/clean.mjs && tsdown && tsc -p tsconfig.json --emitDeclarationOnly && tsc -p tsconfig.client.json --emitDeclarationOnly",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
-    "test": "node --import tsx --test tests/**/*.spec.ts",
+    "test": "tsx --tsconfig tsconfig.client.json --test tests/**/*.spec.ts",
     "verify": "node --import tsx scripts/verify-loomloom-apis.ts"
   },
   "dependencies": {

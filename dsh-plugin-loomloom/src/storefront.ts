@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { MARKET_LISTING_ID_PATTERN, type LoomApi, type LoomApiError, type ResolvedLoomConfig } from './loom-api.js'
 
 /**
@@ -65,6 +66,8 @@ export interface StorefrontReaderOptions {
    * - an API bound to the creator credential: derive the id set from it.
    */
   readonly creator?: LoomApi | null
+  /** Read the public Market catalogue when creator discovery is unavailable. */
+  readonly publicMarket?: boolean
 }
 
 /**
@@ -72,7 +75,7 @@ export interface StorefrontReaderOptions {
  * a derived storefront from a pinned one, and can see a missing creator credential
  * instead of guessing why the market is empty.
  */
-export type StorefrontSource = 'creator' | 'pinned' | 'creator-key-missing' | 'none'
+export type StorefrontSource = 'creator' | 'public' | 'pinned' | 'creator-key-missing' | 'none'
 
 /** Reads one named secret from an environment; unset or blank reads as absent. */
 export function envSecret(env: Record<string, string | undefined>, name: string | undefined): string | undefined {
@@ -83,8 +86,18 @@ export function envSecret(env: Record<string, string | undefined>, name: string 
 
 /** Resolves the live source from configuration plus the creator credential, if any. */
 export function storefrontSourceFor(config: ResolvedLoomConfig, creatorKey: string | undefined): StorefrontSource {
-  if (config.creatorKeyEnv !== undefined) return creatorKey === undefined ? 'creator-key-missing' : 'creator'
-  return config.storefrontListingIds.length > 0 ? 'pinned' : 'none'
+  if (config.creatorKeyEnv !== undefined) return creatorKey === undefined ? 'public' : 'creator'
+  return config.storefrontListingIds.length > 0 ? 'pinned' : 'public'
+}
+
+/** Persist only a digest, never the creator credential itself. */
+export function storefrontCacheKey(config: ResolvedLoomConfig, creatorKey: string | undefined): string {
+  const source = storefrontSourceFor(config, creatorKey)
+  return createHash('sha256').update(JSON.stringify([
+    config.baseUrl,
+    source,
+    source === 'creator' ? creatorKey : source === 'pinned' ? config.storefrontListingIds : null,
+  ])).digest('hex')
 }
 
 type JsonRecord = Record<string, unknown>
@@ -167,6 +180,36 @@ async function mapSettled<T, R>(
 /** Bound on creator pagination; a storefront is far smaller than this. */
 const CREATOR_DISCOVERY_PAGE_SIZE = 200
 const CREATOR_DISCOVERY_MAX_PAGES = 10
+const PUBLIC_MARKET_PAGE_SIZE = 100
+const PUBLIC_MARKET_MAX_PAGES = 20
+
+/** Read the complete bounded public catalogue for the default storefront. */
+async function readPublicMarket(api: LoomApi, signal?: AbortSignal): Promise<StorefrontRead> {
+  const entries: StorefrontEntry[] = []
+  const seen = new Set<string>()
+  const seenPageTokens = new Set<string>()
+  let pageToken = ''
+  for (let page = 0; page < PUBLIC_MARKET_MAX_PAGES; page += 1) {
+    const query = new URLSearchParams({ pageSize: String(PUBLIC_MARKET_PAGE_SIZE) })
+    if (pageToken !== '') query.set('pageToken', pageToken)
+    const payload = record(await api.request(`/marketListings?${query.toString()}`, {}, signal))
+    const items = Array.isArray(payload.items) ? payload.items : []
+    for (const value of items) {
+      const item = record(value)
+      const id = text(item.id ?? item.listingId)
+      if (id === '' || !MARKET_LISTING_ID_PATTERN.test(id) || seen.has(id)) continue
+      seen.add(id)
+      const normalized = entry(item, id)
+      if (normalized.available) entries.push(normalized)
+    }
+    const next = text(payload.nextPageToken ?? payload.next_page_token)
+    if (next === '' || items.length === 0) return { configured: true, entries, unavailable: [] }
+    if (seenPageTokens.has(next)) throw new Error('loomloom returned a repeating public market page token')
+    seenPageTokens.add(next)
+    pageToken = next
+  }
+  throw new Error('loomloom public market page limit exceeded')
+}
 
 /** Newest first, undated entries last, ties broken by name for a stable order. */
 function byRecency(left: StorefrontEntry, right: StorefrontEntry): number {
@@ -240,6 +283,7 @@ export function createStorefrontReader(
   options: StorefrontReaderOptions = {},
 ): (signal?: AbortSignal) => Promise<StorefrontRead> {
   return async (signal?: AbortSignal) => {
+    if (options.publicMarket === true) return readPublicMarket(api, signal)
     if (options.creator === null) return { configured: false, entries: [], unavailable: [] }
     const ids = options.creator === undefined
       ? config.storefrontListingIds

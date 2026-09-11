@@ -7,7 +7,7 @@ import {
   verifyLoomCredential,
   verifyShengsuanyunRouterCredential,
 } from './browser-auth.js'
-import { clearLoomToken, storeLoomToken } from './credentials.js'
+import { clearLoomToken, createLoomIdentityTokenResolver, replaceLoomIdentityToken, storeLoomToken } from './credentials.js'
 import {
   currentShengsuanyunModel,
   selectShengsuanyunDefaultModel,
@@ -35,6 +35,7 @@ interface LoginSession {
   readonly id: string
   readonly controller: AbortController
   readonly previousCredential: string | undefined
+  readonly previousIdentityToken: string | undefined
   readonly expiresAt: number
   readonly expiryTimer: ReturnType<typeof setTimeout>
   modelIds: readonly string[]
@@ -80,6 +81,7 @@ export class LoomBrowserLoginService {
     if (active >= MAX_PENDING_SESSIONS) throw new Error('too many pending Loomloom login sessions')
     const controller = new AbortController()
     const previous = await this.ctx.credentials.resolve(credentialRef(this.config.tokenRef))
+    const previousIdentityToken = await createLoomIdentityTokenResolver(this.ctx)()
     const authorization = await beginBrowserAuthorization(controller.signal)
     const sessionId = randomBytes(24).toString('base64url')
     const expiryTimer = setTimeout(() => { void this.expire(sessionId) }, SESSION_TTL_MS)
@@ -88,6 +90,7 @@ export class LoomBrowserLoginService {
       id: sessionId,
       controller,
       previousCredential: previous?.value,
+      previousIdentityToken,
       expiresAt: Date.now() + SESSION_TTL_MS,
       expiryTimer,
       modelIds: [],
@@ -95,13 +98,13 @@ export class LoomBrowserLoginService {
       state: 'pending',
     }
     this.#sessions.set(sessionId, session)
-    void authorization.result.then(async token => {
+    void authorization.result.then(async credential => {
       if (this.final(session.state)) return
       session.state = 'verifying-loom'
       try {
         const [loomResult, routerResult] = await Promise.allSettled([
-          verifyLoomCredential(token, this.config, controller.signal),
-          verifyShengsuanyunRouterCredential(token, controller.signal),
+          verifyLoomCredential(credential.apiKey, this.config, controller.signal),
+          verifyShengsuanyunRouterCredential(credential.apiKey, controller.signal),
         ])
         if (controller.signal.aborted) { this.finish(session, 'cancelled', 'authorization-cancelled'); return }
         if (loomResult.status === 'rejected') {
@@ -112,7 +115,7 @@ export class LoomBrowserLoginService {
         const modelIds = routerResult.value
         session.state = 'verifying-router'
         session.modelIds = modelIds
-        await this.writeCredential(session, token)
+        await this.writeCredential(session, credential.apiKey, credential.identityToken)
         if (controller.signal.aborted) {
           await this.restoreCredential(session)
           this.finish(session, 'cancelled', 'authorization-cancelled')
@@ -210,6 +213,7 @@ export class LoomBrowserLoginService {
     try {
       if (session.previousCredential === undefined) await clearLoomToken(this.ctx, this.config)
       else await storeLoomToken(this.ctx, this.config, session.previousCredential)
+      await replaceLoomIdentityToken(this.ctx, session.previousIdentityToken)
       session.wroteCredential = false
       this.#credentialOwner = undefined
     } finally {
@@ -217,10 +221,11 @@ export class LoomBrowserLoginService {
     }
   }
 
-  private async writeCredential(session: LoginSession, token: string): Promise<void> {
+  private async writeCredential(session: LoginSession, token: string, identityToken: string | undefined): Promise<void> {
     this.#writingCredential = true
     try {
       await storeLoomToken(this.ctx, this.config, token)
+      await replaceLoomIdentityToken(this.ctx, identityToken)
       session.wroteCredential = true
       this.#credentialOwner = session.id
     } finally {

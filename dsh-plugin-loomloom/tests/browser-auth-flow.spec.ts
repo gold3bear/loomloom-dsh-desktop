@@ -28,7 +28,7 @@ test('browser authorization uses the ShengSuanYun channel contract and exchanges
     exchange = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>
     exchangePath = req.url ?? ''
     res.setHeader('content-type', 'application/json')
-    res.end(JSON.stringify({ code: 0, data: { data: { api_key: 'browser-grant' } } }))
+    res.end(JSON.stringify({ code: 0, data: { data: { api_key: 'browser-grant', jwt_token: 'profile-jwt' } } }))
   })
   try {
     const authorization = await beginBrowserAuthorization(new AbortController().signal, {
@@ -43,7 +43,7 @@ test('browser authorization uses the ShengSuanYun channel contract and exchanges
     callbackUrl.searchParams.set('code', 'one-time-code')
     const reply = await fetch(callbackUrl)
     assert.equal(reply.status, 200)
-    assert.equal(await authorization.result, 'browser-grant')
+    assert.deepEqual(await authorization.result, { apiKey: 'browser-grant', identityToken: 'profile-jwt' })
     assert.deepEqual({ code: exchange?.code, callback_url: exchange?.callback_url }, {
       code: 'one-time-code', callback_url: callback,
     })

@@ -4,6 +4,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import { createStorefrontCache, STOREFRONT_TTL_MS } from '../src/storefront-cache.js'
 import type { StorefrontEntry } from '../src/storefront.js'
 
+const cacheOptions = { configured: true, cacheKey: 'public-market' }
+
 type Schema = (value: unknown) => unknown
 
 /**
@@ -55,7 +57,8 @@ function entry(id: string, name = id): StorefrontEntry {
 function persistedSnapshot(entries: readonly StorefrontEntry[], savedAt: string, unavailable: readonly string[] = []) {
   return {
     storefront: {
-      version: 1,
+      version: 2,
+      cacheKey: cacheOptions.cacheKey,
       configured: true,
       savedAt,
       unavailable: [...unavailable],
@@ -80,7 +83,7 @@ test('a fresh storefront is served from cache instead of re-reading the Market',
   const cache = createStorefrontCache(fakeSettings().context, async () => {
     reads += 1
     return { configured: true, entries: [entry('listing-1')], unavailable: [] }
-  }, { configured: true })
+  }, cacheOptions)
 
   const first = await cache.read()
   const second = await cache.read()
@@ -96,7 +99,7 @@ test('the refresh control bypasses the cache', async () => {
   const cache = createStorefrontCache(fakeSettings().context, async () => {
     reads += 1
     return { configured: true, entries: [entry('listing-1')], unavailable: [] }
-  }, { configured: true })
+  }, cacheOptions)
 
   await cache.read()
   await cache.read(true)
@@ -110,7 +113,7 @@ test('a failed refresh keeps the storefront the user was already browsing', asyn
     attempt += 1
     if (attempt > 1) throw new Error('loomloom service is unavailable')
     return { configured: true, entries: [entry('listing-1')], unavailable: ['gone'] }
-  }, { configured: true })
+  }, cacheOptions)
 
   await cache.read()
   const result = await cache.read(true)
@@ -124,7 +127,7 @@ test('a failed refresh keeps the storefront the user was already browsing', asyn
 test('a failed first refresh reports an error instead of pretending the storefront is empty', async () => {
   const cache = createStorefrontCache(fakeSettings().context, async () => {
     throw new Error('loomloom service is unavailable')
-  }, { configured: true })
+  }, cacheOptions)
 
   const result = await cache.read()
 
@@ -139,7 +142,7 @@ test('a successful read is persisted so a restart does not pay for a cold storef
     configured: true,
     entries: [entry('listing-1', '视觉演示生成器')],
     unavailable: ['gone'],
-  }), { configured: true })
+  }), cacheOptions)
   await first.read()
 
   assert.equal(settings.updates.length, 1)
@@ -152,7 +155,7 @@ test('a successful read is persisted so a restart does not pay for a cold storef
   const restarted = createStorefrontCache(settings.context, async () => {
     reads += 1
     return { configured: true, entries: [], unavailable: [] }
-  }, { configured: true })
+  }, cacheOptions)
   const restored = await restarted.read()
 
   assert.equal(reads, 0)
@@ -168,7 +171,7 @@ test('a persisted snapshot past its lifetime is refreshed', async () => {
   const cache = createStorefrontCache(settings.context, async () => {
     reads += 1
     return { configured: true, entries: [entry('new')], unavailable: [] }
-  }, { configured: true })
+  }, cacheOptions)
 
   const result = await cache.read()
 
@@ -181,7 +184,7 @@ test('a stale persisted snapshot survives a failed refresh', async () => {
   const settings = fakeSettings(persistedSnapshot([entry('old')], stale))
   const cache = createStorefrontCache(settings.context, async () => {
     throw new Error('loomloom service is unavailable')
-  }, { configured: true })
+  }, cacheOptions)
 
   const result = await cache.read()
 
@@ -195,7 +198,7 @@ test('without a settings service the storefront still resolves from memory', asy
   const cache = createStorefrontCache(context, async () => {
     reads += 1
     return { configured: true, entries: [entry('listing-1')], unavailable: [] }
-  }, { configured: true })
+  }, cacheOptions)
 
   const first = await cache.read()
   const second = await cache.read()
@@ -207,5 +210,49 @@ test('without a settings service the storefront still resolves from memory', asy
 
 test('a malformed persisted document is rejected at registration instead of reaching the storefront', () => {
   const settings = fakeSettings({ storefront: { version: 1, savedAt: 'not-a-number', entries: 'nope', unavailable: [] } })
-  assert.throws(() => createStorefrontCache(settings.context, async () => ({ configured: false, entries: [], unavailable: [] }), { configured: true }))
+  assert.throws(() => createStorefrontCache(settings.context, async () => ({ configured: false, entries: [], unavailable: [] }), cacheOptions))
+})
+
+test('a fresh legacy unconfigured cache cannot hide the default public Market after upgrading', async () => {
+  const settings = fakeSettings({ storefront: {
+    version: 1, configured: false, savedAt: new Date().toISOString(), entries: [], unavailable: [],
+  } })
+  let reads = 0
+  const cache = createStorefrontCache(settings.context, async () => {
+    reads += 1
+    return { configured: true, entries: [entry('public-listing')], unavailable: [] }
+  }, cacheOptions)
+  const result = await cache.read()
+  assert.equal(reads, 1)
+  assert.equal(result.configured, true)
+  assert.equal(result.stale, false)
+  assert.equal(result.entries[0]?.id, 'public-listing')
+})
+
+test('a failed public refresh does not fall back to a legacy unconfigured snapshot', async () => {
+  const settings = fakeSettings({ storefront: {
+    version: 1, configured: false, savedAt: new Date().toISOString(), entries: [], unavailable: [],
+  } })
+  const cache = createStorefrontCache(settings.context, async () => {
+    throw new Error('market timed out')
+  }, cacheOptions)
+  const result = await cache.read()
+  assert.equal(result.configured, true)
+  assert.equal(result.stale, true)
+  assert.equal(result.error, 'market timed out')
+})
+
+test('changing catalogue never reuses another source on success or failure', async () => {
+  for (const fail of [false, true]) {
+    const initial = persistedSnapshot([entry('another-creator')], new Date().toISOString())
+    initial.storefront.cacheKey = 'creator-market'
+    const cache = createStorefrontCache(fakeSettings(initial).context, async () => {
+      if (fail) throw new Error('offline')
+      return { configured: true, entries: [entry('public-listing')], unavailable: [] }
+    }, cacheOptions)
+    const result = await cache.read()
+    assert.equal(result.configured, true)
+    assert.deepEqual(result.entries.map(item => item.id), fail ? [] : ['public-listing'])
+    assert.equal(result.stale, fail)
+  }
 })

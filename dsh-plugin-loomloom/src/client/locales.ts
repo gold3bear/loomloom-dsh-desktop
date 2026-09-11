@@ -68,6 +68,7 @@ export type LoomloomLocaleKey =
   | 'user'
   | 'close'
   | 'accountUnavailable'
+  | 'refreshAccount'
   | 'marketEntry'
   | 'marketEyebrow'
   | 'marketTitle'
@@ -171,6 +172,7 @@ export const zh: Record<LoomloomLocaleKey, string> = {
   user: '普通用户',
   close: '关闭',
   accountUnavailable: '账户资料暂时不可用，连接本身仍然有效。',
+  refreshAccount: '重新登录以加载账户资料',
   marketEntry: '云端 SkillBot',
   marketEyebrow: 'LoomLoom Market',
   marketTitle: '云端 SkillBot 市场',
@@ -283,6 +285,7 @@ export const en: Record<LoomloomLocaleKey, string> = {
   user: 'User',
   close: 'Close',
   accountUnavailable: 'Account details are temporarily unavailable; the connection is still active.',
+  refreshAccount: 'Sign in again to load account details',
   marketEntry: 'Cloud SkillBots',
   marketEyebrow: 'LoomLoom Market',
   marketTitle: 'Cloud SkillBot Market',

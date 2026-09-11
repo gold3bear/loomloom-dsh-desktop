@@ -12,17 +12,27 @@ export type LoomloomIdentityActionProps =
   PropsRuntime<'sidebar.footer.action'>
   & PropsLocale<'loomloom'>
 
+function accountLabel(account: LoomAccount | undefined, fallback: string): string {
+  return account?.displayName ?? account?.email ?? account?.uid ?? fallback
+}
+
+function credentialFallback(status: { readonly maskedToken?: string }, fallback: string): string {
+  return status.maskedToken === undefined ? fallback : `API Key ${status.maskedToken}`
+}
+
 function initials(account: LoomAccount): string {
-  const source = account.displayName ?? account.email ?? '?'
+  const source = accountLabel(account, '?')
   return source.trim().slice(0, 1).toUpperCase()
 }
 
 export function LoomloomIdentityAction({ wide, t }: LoomloomIdentityActionProps) {
   const [configured, setConfigured] = useState(false)
+  const [credentialStatus, setCredentialStatus] = useState<{ readonly maskedToken?: string }>({})
   const [account, setAccount] = useState<LoomAccount | undefined>()
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | undefined>()
+  const [reauthorizing, setReauthorizing] = useState(false)
 
   const refresh = async (): Promise<void> => {
     setLoading(true)
@@ -34,6 +44,7 @@ export function LoomloomIdentityAction({ wide, t }: LoomloomIdentityActionProps)
       // which avatar to draw.
       const status = await readCredentialStatus()
       setConfigured(status.configured)
+      setCredentialStatus(status)
       if (status.configured) {
         try {
           setAccount(await readAccount())
@@ -55,9 +66,7 @@ export function LoomloomIdentityAction({ wide, t }: LoomloomIdentityActionProps)
 
   useEffect(() => { void refresh() }, [])
 
-  const label = configured
-    ? account?.displayName ?? account?.email ?? t('account')
-    : t('signIn')
+  const label = configured ? accountLabel(account, credentialFallback(credentialStatus, t('account'))) : t('signIn')
 
   return (
     <>
@@ -89,7 +98,14 @@ export function LoomloomIdentityAction({ wide, t }: LoomloomIdentityActionProps)
               <h2 id="loomloom-identity-title">{configured ? label : t('signIn')}</h2>
               <button type="button" className="loomloomIdentityClose" aria-label={t('close')} onClick={() => setOpen(false)}>×</button>
             </div>
-            {!configured
+            {reauthorizing
+              ? <LoomloomConnectFlow
+                t={t}
+                forceSignIn
+                onConnected={() => { setReauthorizing(false); void refresh() }}
+                onLater={() => setReauthorizing(false)}
+              />
+              : !configured
               ? <LoomloomConnectFlow
                 t={t}
                 onConnected={() => { setOpen(false); void refresh() }}
@@ -101,11 +117,12 @@ export function LoomloomIdentityAction({ wide, t }: LoomloomIdentityActionProps)
                     {account?.photoUrl ? <img src={account.photoUrl} alt="" /> : initials(account ?? { configured: true })}
                   </span>
                   <div>
-                    <strong>{account?.displayName ?? t('account')}</strong>
+                    <strong>{accountLabel(account, t('account'))}</strong>
                     {account?.email && <span>{account.email}</span>}
                   </div>
                 </div>
                 {error && <p className="loomloomError" role="status">{error}</p>}
+                {error && <button className="loomloomButton" type="button" onClick={() => setReauthorizing(true)}>{t('refreshAccount')}</button>}
                 {account && <dl className="loomloomIdentityFacts">
                   {account?.uid && <><dt>{t('accountId')}</dt><dd>{account.uid}</dd></>}
                   {account?.balance && <><dt>{t('balance')}</dt><dd>{account.balance}</dd></>}

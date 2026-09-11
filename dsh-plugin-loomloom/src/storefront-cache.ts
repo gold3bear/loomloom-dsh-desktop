@@ -57,6 +57,7 @@ interface StoredEntry {
  */
 interface StoredSnapshot {
   version: number
+  cacheKey: string
   configured: boolean
   savedAt: string
   entries: StoredEntry[]
@@ -67,7 +68,7 @@ export interface StorefrontCacheDocument {
   storefront: StoredSnapshot
 }
 
-const EMPTY_SNAPSHOT: StoredSnapshot = { version: 1, configured: false, savedAt: '', entries: [], unavailable: [] }
+const EMPTY_SNAPSHOT: StoredSnapshot = { version: 2, cacheKey: '', configured: false, savedAt: '', entries: [], unavailable: [] }
 
 const StoredEntrySchema = z.object({
   id: z.string().default(''),
@@ -85,6 +86,7 @@ const StoredEntrySchema = z.object({
 const StorefrontCacheSchema: z<StorefrontCacheDocument> = z.object({
   storefront: z.object({
     version: z.number().default(1),
+    cacheKey: z.string().default(''),
     configured: z.boolean().default(false),
     savedAt: z.string().default(''),
     entries: z.array(StoredEntrySchema).default([]),
@@ -136,8 +138,10 @@ export interface StorefrontCache {
 }
 
 export interface StorefrontCacheOptions {
+  /** Non-secret fingerprint of the API, source and selected catalogue. */
+  readonly cacheKey: string
   /**
-   * Whether an allow-list is configured at all.
+   * Whether a source is available, including the default public Market.
    *
    * Composition knows this and a failed read does not, so it is passed in: a
    * storefront that is configured but unreachable must not report itself as
@@ -180,7 +184,9 @@ export function createStorefrontCache(
   const persisted = (): StorefrontSnapshot | undefined => {
     if (scope === undefined) return undefined
     const stored = scope.get().storefront
-    if (stored.savedAt === '') return undefined
+    // Legacy snapshots have no source identity and must not hide the public Market.
+    if (stored.version !== 2 || stored.cacheKey !== options.cacheKey
+      || stored.configured !== options.configured || stored.savedAt === '') return undefined
     return {
       configured: stored.configured,
       entries: stored.entries.map(restore),
@@ -202,7 +208,8 @@ export function createStorefrontCache(
     if (scope !== undefined) {
       await scope.update({
         storefront: {
-          version: 1,
+          version: 2,
+          cacheKey: options.cacheKey,
           configured: value.configured,
           savedAt: fetchedAt,
           entries: value.entries.map(store),
