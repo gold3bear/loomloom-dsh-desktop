@@ -1,5 +1,7 @@
 const DEFAULT_BASE_URL = 'https://loomloom.shengsuanyun.com/loom/v1'
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+/** Workbook downloads are binary and larger than JSON responses. */
+const MAX_BINARY_BYTES = 16 * 1024 * 1024
 
 export interface LoomConfig {
   readonly baseUrl?: string
@@ -22,6 +24,24 @@ export interface ResolvedLoomConfig {
   readonly baseUrl: URL
   readonly token: string | undefined
   readonly tokenRef: string
+}
+
+/** A binary download (a workbook) carried as base64 across the host boundary. */
+export interface BinaryPayload {
+  readonly base64: string
+  readonly byteLength: number
+  readonly contentType: string
+  readonly filename?: string
+}
+
+/** Extract the `filename` parameter of a Content-Disposition header, if any. */
+function suggestedFilename(header: string | null): string | undefined {
+  if (header === null) return undefined
+  const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/iu.exec(header)
+  const candidate = match?.[1]?.trim()
+  if (candidate === undefined || candidate === '') return undefined
+  // Never let an upstream header escape the caller's chosen directory.
+  return candidate.replace(/[\\/]/gu, '_')
 }
 
 export function resolveLoomConfig(config: LoomConfig = {}): ResolvedLoomConfig {
@@ -87,5 +107,38 @@ export class LoomApi {
       throw new LoomApiError(response.status, message)
     }
     return payload
+  }
+
+  /**
+   * Fetch a binary response (an `.xlsx` workbook) and return it base64 encoded
+   * together with the suggested filename. Binary endpoints never carry a JSON
+   * error body, so a non-OK status is surfaced by status code alone.
+   */
+  async requestBinary(path: string, init: RequestInit = {}, signal?: AbortSignal): Promise<BinaryPayload> {
+    if (!path.startsWith('/') || path.startsWith('//')) throw new Error('loomloom path must be absolute and local to configured API')
+    const headers = new Headers(init.headers)
+    headers.set('accept', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/octet-stream')
+    const token = await this.resolveToken()
+    if (token !== undefined && token.trim() !== '') headers.set('authorization', `Bearer ${token.trim()}`)
+    let response: Response
+    try {
+      response = await fetch(new URL(path.slice(1), this.config.baseUrl), {
+        ...init,
+        headers,
+        ...(signal === undefined ? {} : { signal }),
+      })
+    } catch {
+      throw new LoomApiError(502, 'loomloom service is unavailable')
+    }
+    if (!response.ok) throw new LoomApiError(response.status, `loomloom workbook request failed with status ${response.status}`)
+    const body = Buffer.from(await response.arrayBuffer())
+    if (body.byteLength > MAX_BINARY_BYTES) throw new LoomApiError(502, 'loomloom workbook response exceeded size limit')
+    const filename = suggestedFilename(response.headers.get('content-disposition'))
+    return {
+      base64: body.toString('base64'),
+      byteLength: body.byteLength,
+      contentType: response.headers.get('content-type') ?? 'application/octet-stream',
+      ...(filename === undefined ? {} : { filename }),
+    }
   }
 }

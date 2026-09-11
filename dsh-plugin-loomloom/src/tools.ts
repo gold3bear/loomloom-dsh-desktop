@@ -51,6 +51,7 @@ interface ExecutionToolArtifact {
   label: string
   mimeType?: string
   accessUrl?: string
+  inlineText?: string
 }
 
 interface ExecutionToolValue {
@@ -87,6 +88,7 @@ function executionResultValue(receipt: Awaited<ReturnType<LoomSkillbotService['e
       label: artifact.label,
       ...(artifact.mimeType === undefined ? {} : { mimeType: artifact.mimeType }),
       ...(artifact.accessUrl === undefined ? {} : { accessUrl: artifact.accessUrl }),
+      ...(artifact.inlineText === undefined ? {} : { inlineText: artifact.inlineText }),
     }))
   }
   return value
@@ -106,8 +108,10 @@ export function registerLoomTools(ctx: Context, service: LoomSkillbotService): (
   const disposers = [
     ctx.tools.register(defineTool({
       name: 'loomloom_list_skillbots',
-      description: 'List available Loomloom SkillBots. Use this to discover an appropriate SkillBot before preparing an execution.',
-      parameters: {},
+      description: 'List every available Loomloom SkillBot by fetching the complete market dataset. An optional keyword filters the full dataset locally by title and description (case-insensitive, whitespace-separated terms all matched against it); use it to discover an appropriate SkillBot before preparing an execution.',
+      parameters: {
+        keyword: { type: 'string', description: 'Optional keyword matched locally against the full dataset (listing title, description and id; case-insensitive; multiple whitespace-separated terms are ranked by how many match).' },
+      },
       output: {
         schema: { type: 'array', items: SKILLBOT_SCHEMA },
         render: (_args, value) => [{
@@ -117,8 +121,10 @@ export function registerLoomTools(ctx: Context, service: LoomSkillbotService): (
             : value.map(skillbot => `${skillbot.name} (${skillbot.id})${skillbot.fixedFee === undefined ? '' : ` — fixed fee ${skillbot.fixedFee}`}`).join('\n'),
         }],
       },
-      async execute(_args, exec) {
-        return (await service.list(exec.signal)).map(skillbotValue)
+      async execute(args, exec) {
+        const options: { keyword?: string } = {}
+        if (typeof args.keyword === 'string') options.keyword = args.keyword
+        return (await service.list(exec.signal, options)).map(skillbotValue)
       },
     })),
     ctx.tools.register(defineTool({
@@ -192,7 +198,7 @@ export function registerLoomTools(ctx: Context, service: LoomSkillbotService): (
             },
           },
         },
-        render: (_args, value) => [{ type: 'text', text: `Prepared ${value.rowCount} row(s) for ${value.skillbot.name}. Market estimate: ${value.quote.estimatedBuyerPayable}${value.quote.currency === undefined ? ' (currency unknown)' : ` ${value.quote.currency}`}. Ask the user to confirm before calling loomloom_execute_skillbot. Draft expires at ${value.expiresAt}.` }],
+        render: (_args, value) => [{ type: 'text', text: `Prepared ${value.rowCount} row(s) for ${value.skillbot.name}. Market estimate: ${value.quote.estimatedBuyerPayable}${value.quote.currency === undefined ? ' (currency unknown)' : ` ${value.quote.currency}`}. Do NOT reuse the listing id: the execution draft id is ${value.draftId}. Ask the user to confirm before calling loomloom_execute_skillbot with draft_id=${value.draftId}. Draft expires at ${value.expiresAt}.` }],
       },
       async execute(args, exec) {
         const draft = await service.prepare(
@@ -233,25 +239,33 @@ export function registerLoomTools(ctx: Context, service: LoomSkillbotService): (
                   label: { type: 'string', required: true },
                   mimeType: { type: 'string' },
                   accessUrl: { type: 'string' },
+                  inlineText: { type: 'string' },
                 },
               },
             },
           },
         },
-        render: (_args, value) => [{
-          type: 'text',
-          text: value.runId === undefined
-            ? 'Loomloom accepted the execution request.'
-            : value.pending === true
-              ? `Loomloom accepted the execution request. Run ID: ${value.runId} is still ${value.status ?? 'pending'}; polling stopped before completion.`
-              : `Loomloom run ${value.runId} finished with status ${value.status ?? 'unknown'}${value.completedRows === undefined ? '' : ` (${value.completedRows}/${value.totalRows} rows completed, ${value.failedRows} failed)`}.`,
-        }],
+        render: (_args, value) => {
+          const blocks: { type: 'text', text: string }[] = [{
+            type: 'text',
+            text: value.runId === undefined
+              ? 'Loomloom accepted the execution request.'
+              : value.pending === true
+                ? `Loomloom accepted the execution request. Run ID: ${value.runId} is still ${value.status ?? 'pending'}; polling stopped before completion.`
+                : `Loomloom run ${value.runId} finished with status ${value.status ?? 'unknown'}${value.completedRows === undefined ? '' : ` (${value.completedRows}/${value.totalRows} rows completed, ${value.failedRows} failed)`}.`,
+          }]
+          for (const artifact of value.artifacts ?? []) {
+            if (typeof artifact.inlineText !== 'string' || artifact.inlineText.trim() === '') continue
+            blocks.push({ type: 'text', text: `--- ${artifact.label} ---\n${artifact.inlineText}` })
+          }
+          return blocks
+        },
       },
       async execute(args, exec) {
         const agent = requireAgent(exec.agent)
         const draftId = asString(args.draft_id, 'draft_id')
         const draft = service.describeDraft(draftId, agent)
-        if (draft === undefined) throw new LoomApiError(404, 'execution draft is unavailable or expired')
+        if (draft === undefined) throw new LoomApiError(404, `execution draft "${draftId}" is unavailable or expired (it must be the draft_id returned by loomloom_prepare_execution, not the listing id)`)
         const approval = ctx.get('approval')
         if (approval === undefined) throw new LoomApiError(503, 'DSH user approval is unavailable; execution is blocked')
         const estimate = `${draft.quote.estimatedBuyerPayable}${draft.quote.currency === undefined ? ' (currency unknown)' : ` ${draft.quote.currency}`}`
@@ -306,13 +320,23 @@ export function registerLoomTools(ctx: Context, service: LoomSkillbotService): (
                 type: 'object', additionalProperties: false,
                 properties: {
                   id: { type: 'string', required: true }, label: { type: 'string', required: true },
-                  mimeType: { type: 'string' }, accessUrl: { type: 'string' },
+                  mimeType: { type: 'string' }, accessUrl: { type: 'string' }, inlineText: { type: 'string' },
                 },
               },
             },
           },
         },
-        render: (_args, value) => [{ type: 'text', text: `${value.status}: ${value.completedRows}/${value.totalRows} completed, ${value.failedRows} failed. ${value.artifacts.length} output artifact(s) available.` }],
+        render: (_args, value) => {
+          const blocks: { type: 'text', text: string }[] = [{
+            type: 'text',
+            text: `${value.status}: ${value.completedRows}/${value.totalRows} completed, ${value.failedRows} failed. ${value.artifacts.length} output artifact(s) available.`,
+          }]
+          for (const artifact of value.artifacts) {
+            if (typeof artifact.inlineText !== 'string' || artifact.inlineText.trim() === '') continue
+            blocks.push({ type: 'text', text: `--- ${artifact.label} ---\n${artifact.inlineText}` })
+          }
+          return blocks
+        },
       },
       async execute(args, exec) {
         const result = await service.getRunResults(asString(args.run_id, 'run_id'), exec.signal)
@@ -327,8 +351,304 @@ export function registerLoomTools(ctx: Context, service: LoomSkillbotService): (
             label: artifact.label,
             ...(artifact.mimeType === undefined ? {} : { mimeType: artifact.mimeType }),
             ...(artifact.accessUrl === undefined ? {} : { accessUrl: artifact.accessUrl }),
+            ...(artifact.inlineText === undefined ? {} : { inlineText: artifact.inlineText }),
           })),
         }
+      },
+    })),
+    ctx.tools.register(defineTool({
+      name: 'loomloom_get_balance',
+      description: 'Read the current Loomloom settled balance snapshot for the signed-in account. Use it before preparing a paid execution when cost matters.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object', additionalProperties: false,
+          properties: {
+            currency: { type: 'string' },
+            availableBalance: { type: 'string' },
+          },
+        },
+        render: (_args, value) => [{
+          type: 'text',
+          text: value.availableBalance === undefined
+            ? 'Loomloom did not return an available balance.'
+            : `Available balance: ${value.availableBalance}${value.currency === undefined ? ' (currency unknown)' : ` ${value.currency}`}`,
+        }],
+      },
+      async execute(_args, exec) {
+        const balance = await service.getBalance(exec.signal)
+        return {
+          ...(balance.currency === undefined ? {} : { currency: balance.currency }),
+          ...(balance.availableBalance === undefined ? {} : { availableBalance: balance.availableBalance }),
+        }
+      },
+    })),
+    ctx.tools.register(defineTool({
+      name: 'loomloom_list_my_listings',
+      description: 'List the Market listings owned by the signed-in creator account, including sale status, review status and fixed fee. Read-only.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'array',
+          items: {
+            type: 'object', additionalProperties: false,
+            properties: {
+              id: { type: 'string', required: true },
+              name: { type: 'string', required: true },
+              description: { type: 'string', required: true },
+              available: { type: 'boolean', required: true },
+              status: { type: 'string' },
+              saleStatus: { type: 'string' },
+              fixedFee: { type: 'string' },
+              currency: { type: 'string' },
+              listingVersionId: { type: 'string' },
+              publishedVersionId: { type: 'string' },
+              reviewStatus: { type: 'string' },
+              reviewReason: { type: 'string' },
+            },
+          },
+        },
+        render: (_args, value) => [{
+          type: 'text',
+          text: value.length === 0
+            ? 'This account owns no Market listings.'
+            : value.map(listing => `${listing.name} (${listing.id})${listing.saleStatus === undefined ? '' : ` — ${listing.saleStatus}`}${listing.reviewStatus === undefined ? '' : ` / review ${listing.reviewStatus}`}${listing.fixedFee === undefined ? '' : ` — fixed fee ${listing.fixedFee}`}`).join('\n'),
+        }],
+      },
+      async execute(_args, exec) {
+        return (await service.listMyListings(exec.signal)).map(listing => ({
+          id: listing.id,
+          name: listing.name,
+          description: listing.description,
+          available: listing.available,
+          ...(listing.status === undefined ? {} : { status: listing.status }),
+          ...(listing.saleStatus === undefined ? {} : { saleStatus: listing.saleStatus }),
+          ...(listing.fixedFee === undefined ? {} : { fixedFee: listing.fixedFee }),
+          ...(listing.currency === undefined ? {} : { currency: listing.currency }),
+          ...(listing.listingVersionId === undefined ? {} : { listingVersionId: listing.listingVersionId }),
+          ...(listing.publishedVersionId === undefined ? {} : { publishedVersionId: listing.publishedVersionId }),
+          ...(listing.reviewStatus === undefined ? {} : { reviewStatus: listing.reviewStatus }),
+          ...(listing.reviewReason === undefined ? {} : { reviewReason: listing.reviewReason }),
+        }))
+      },
+    })),
+    ctx.tools.register(defineTool({
+      name: 'loomloom_list_creator_transactions',
+      description: 'List the signed-in creator account Market transactions (who ran which listing and the associated fees). Read-only.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'array',
+          items: {
+            type: 'object', additionalProperties: false,
+            properties: {
+              runTransactionId: { type: 'string' },
+              runId: { type: 'string' },
+              listingId: { type: 'string' },
+              skillName: { type: 'string' },
+              taskFixedFee: { type: 'string' },
+              finalBuyerPayable: { type: 'string' },
+              currency: { type: 'string' },
+              transactionStatus: { type: 'string' },
+            },
+          },
+        },
+        render: (_args, value) => [{
+          type: 'text',
+          text: value.length === 0
+            ? 'This account has no Market transactions.'
+            : value.map(transaction => `${transaction.skillName ?? transaction.listingId ?? 'transaction'}${transaction.transactionStatus === undefined ? '' : ` — ${transaction.transactionStatus}`}${transaction.taskFixedFee === undefined ? '' : ` — fee ${transaction.taskFixedFee}`}${transaction.runId === undefined ? '' : ` (run ${transaction.runId})`}`).join('\n'),
+        }],
+      },
+      async execute(_args, exec) {
+        return (await service.listCreatorTransactions(exec.signal)).map(transaction => ({
+          ...(transaction.runTransactionId === undefined ? {} : { runTransactionId: transaction.runTransactionId }),
+          ...(transaction.runId === undefined ? {} : { runId: transaction.runId }),
+          ...(transaction.listingId === undefined ? {} : { listingId: transaction.listingId }),
+          ...(transaction.skillName === undefined ? {} : { skillName: transaction.skillName }),
+          ...(transaction.taskFixedFee === undefined ? {} : { taskFixedFee: transaction.taskFixedFee }),
+          ...(transaction.finalBuyerPayable === undefined ? {} : { finalBuyerPayable: transaction.finalBuyerPayable }),
+          ...(transaction.currency === undefined ? {} : { currency: transaction.currency }),
+          ...(transaction.transactionStatus === undefined ? {} : { transactionStatus: transaction.transactionStatus }),
+        }))
+      },
+    })),
+    ctx.tools.register(defineTool({
+      name: 'loomloom_publish_listing',
+      description: 'Publish a creator template version as a Market listing for review. This writes to the account and starts a review; ask the user for the display name, template ids and fixed fee before calling it.',
+      parameters: {
+        display_name: { type: 'string', required: true, description: 'Public listing display name shown in the Market.' },
+        template_id: { type: 'string', required: true, description: 'Template id to publish.' },
+        template_version_id: { type: 'string', required: true, description: 'Template version id to publish.' },
+        task_fixed_fee: { type: 'number', required: true, description: 'Creator fixed fee per billable task, in currency units (for example 0.5).' },
+        description: { type: 'string', description: 'Optional listing description.' },
+        listing_id: { type: 'string', description: 'Optional existing listing id when publishing a new version of it.' },
+      },
+      output: {
+        schema: {
+          type: 'object', additionalProperties: false,
+          properties: {
+            id: { type: 'string', required: true },
+            status: { type: 'string' },
+            reviewStatus: { type: 'string' },
+            name: { type: 'string' },
+          },
+        },
+        render: (_args, value) => [{
+          type: 'text',
+          text: `Published listing ${value.id}${value.name === undefined ? '' : ` (${value.name})`}${value.status === undefined ? '' : ` with status ${value.status}`}${value.reviewStatus === undefined ? '' : `; review ${value.reviewStatus}`}.`,
+        }],
+      },
+      async execute(args, exec) {
+        const fee = args.task_fixed_fee
+        if (typeof fee !== 'number') throw new LoomApiError(400, 'task_fixed_fee is required')
+        const published = await service.publishListing({
+          displayName: asString(args.display_name, 'display_name'),
+          templateId: asString(args.template_id, 'template_id'),
+          templateVersionId: asString(args.template_version_id, 'template_version_id'),
+          taskFixedFee: fee,
+          ...(typeof args.description === 'string' ? { description: args.description } : {}),
+          ...(typeof args.listing_id === 'string' ? { listingId: args.listing_id } : {}),
+        }, exec.signal)
+        return {
+          id: published.id,
+          ...(published.status === undefined ? {} : { status: published.status }),
+          ...(published.reviewStatus === undefined ? {} : { reviewStatus: published.reviewStatus }),
+          ...(published.name === undefined ? {} : { name: published.name }),
+        }
+      },
+    })),
+    ctx.tools.register(defineTool({
+      name: 'loomloom_list_official_templates',
+      description: 'List the official (first-party) Loomloom templates that can be run or published. Use it to find a template id before reading its schema.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'array',
+          items: {
+            type: 'object', additionalProperties: false,
+            properties: {
+              templateId: { type: 'string', required: true },
+              name: { type: 'string', required: true },
+              scenario: { type: 'string' },
+              inputSummary: { type: 'string' },
+              outputType: { type: 'string' },
+              version: { type: 'string' },
+            },
+          },
+        },
+        render: (_args, value) => [{
+          type: 'text',
+          text: value.length === 0
+            ? 'No official Loomloom templates were found.'
+            : value.map(template => `${template.name} (${template.templateId})${template.scenario === undefined ? '' : ` — ${template.scenario}`}${template.outputType === undefined ? '' : ` → ${template.outputType}`}`).join('\n'),
+        }],
+      },
+      async execute(_args, exec) {
+        return (await service.listOfficialTemplates(exec.signal)).map(template => ({
+          templateId: template.templateId,
+          name: template.name,
+          ...(template.scenario === undefined ? {} : { scenario: template.scenario }),
+          ...(template.inputSummary === undefined ? {} : { inputSummary: template.inputSummary }),
+          ...(template.outputType === undefined ? {} : { outputType: template.outputType }),
+          ...(template.version === undefined ? {} : { version: template.version }),
+        }))
+      },
+    })),
+    ctx.tools.register(defineTool({
+      name: 'loomloom_get_template_schema',
+      description: 'Read one official Loomloom template input schema, including every declared field and its hint. Use it before running or publishing that template.',
+      parameters: {
+        template_id: { type: 'string', required: true, description: 'Official template id returned by loomloom_list_official_templates.' },
+      },
+      output: {
+        schema: {
+          type: 'object', additionalProperties: false,
+          properties: {
+            templateId: { type: 'string', required: true },
+            name: { type: 'string' },
+            description: { type: 'string' },
+            scenario: { type: 'string' },
+            outputType: { type: 'string' },
+            fields: {
+              type: 'array', required: true,
+              items: {
+                type: 'object', additionalProperties: false,
+                properties: {
+                  key: { type: 'string', required: true },
+                  label: { type: 'string', required: true },
+                  required: { type: 'boolean', required: true },
+                  valueType: { type: 'string', required: true },
+                  inputHint: { type: 'string' },
+                  enumValues: { type: 'array', items: { type: 'string' } },
+                  examples: { type: 'array', items: { type: 'string' } },
+                },
+              },
+            },
+          },
+        },
+        render: (_args, value) => [{
+          type: 'text',
+          text: `${value.name ?? value.templateId} accepts: ${value.fields.map(field => `${field.key}${field.required ? ' (required)' : ''}`).join(', ') || 'no declared fields'}`,
+        }],
+      },
+      async execute(args, exec) {
+        const schema = await service.getTemplateSchema(asString(args.template_id, 'template_id'), exec.signal)
+        return {
+          templateId: schema.templateId,
+          fields: schema.fields.map(field => ({
+            key: field.key,
+            label: field.label,
+            required: field.required,
+            valueType: field.valueType,
+            ...(field.inputHint === undefined ? {} : { inputHint: field.inputHint }),
+            ...(field.enumValues === undefined ? {} : { enumValues: [...field.enumValues] }),
+            ...(field.examples === undefined ? {} : { examples: [...field.examples] }),
+          })),
+          ...(schema.name === undefined ? {} : { name: schema.name }),
+          ...(schema.description === undefined ? {} : { description: schema.description }),
+          ...(schema.scenario === undefined ? {} : { scenario: schema.scenario }),
+          ...(schema.outputType === undefined ? {} : { outputType: schema.outputType }),
+        }
+      },
+    })),
+    ctx.tools.register(defineTool({
+      name: 'loomloom_list_my_templates',
+      description: 'List the private (creator-authored) templates owned by the signed-in account, including the version id required to publish a Market listing. Read-only.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'array',
+          items: {
+            type: 'object', additionalProperties: false,
+            properties: {
+              templateId: { type: 'string', required: true },
+              name: { type: 'string', required: true },
+              description: { type: 'string' },
+              status: { type: 'string' },
+              latestVersionId: { type: 'string' },
+              publishedVersionId: { type: 'string' },
+              outputType: { type: 'string' },
+            },
+          },
+        },
+        render: (_args, value) => [{
+          type: 'text',
+          text: value.length === 0
+            ? 'This account owns no private templates.'
+            : value.map(template => `${template.name} (${template.templateId})${template.status === undefined ? '' : ` — ${template.status}`}${template.latestVersionId === undefined ? '' : ` — latest version ${template.latestVersionId}`}`).join('\n'),
+        }],
+      },
+      async execute(_args, exec) {
+        return (await service.listMyTemplates(exec.signal)).map(template => ({
+          templateId: template.templateId,
+          name: template.name,
+          ...(template.description === undefined ? {} : { description: template.description }),
+          ...(template.status === undefined ? {} : { status: template.status }),
+          ...(template.latestVersionId === undefined ? {} : { latestVersionId: template.latestVersionId }),
+          ...(template.publishedVersionId === undefined ? {} : { publishedVersionId: template.publishedVersionId }),
+          ...(template.outputType === undefined ? {} : { outputType: template.outputType }),
+        }))
       },
     })),
   ]

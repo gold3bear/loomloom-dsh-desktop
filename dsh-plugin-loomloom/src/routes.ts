@@ -22,6 +22,20 @@ function sendJson(res: ServerResponse, status: number, value: unknown): void {
   res.end(JSON.stringify(value))
 }
 
+/**
+ * Stream a downloaded workbook back to the caller. Binary payloads cross the
+ * upstream boundary as base64 (the CLI's `[]byte` JSON encoding), so the route
+ * decodes once and sets a download filename the browser can honour.
+ */
+function sendBinary(res: ServerResponse, payload: { base64: string, contentType: string, filename: string }): void {
+  res.statusCode = 200
+  res.setHeader('content-type', payload.contentType)
+  res.setHeader('cache-control', 'no-store')
+  res.setHeader('x-content-type-options', 'nosniff')
+  res.setHeader('content-disposition', `attachment; filename="${payload.filename.replace(/["\\]/gu, '_')}"`)
+  res.end(Buffer.from(payload.base64, 'base64'))
+}
+
 function sameOrigin(req: IncomingMessage, port: number): boolean {
   const host = req.headers.host?.toLowerCase()
   return host === `127.0.0.1:${port}` || host === `localhost:${port}`
@@ -54,6 +68,59 @@ async function requestBody(req: IncomingMessage): Promise<Record<string, unknown
   } catch {
     throw new LoomApiError(400, 'request body must be a JSON object')
   }
+}
+
+/**
+ * Forward a filled workbook to one upstream workbook action. The client sends
+ * `{ filename, content }` where content is base64 bytes (the same encoding the
+ * upstream expects from the Go CLI), plus a `listingId` query parameter. The
+ * paid run action additionally requires an explicit confirmation and a
+ * stable idempotency key.
+ */
+async function forwardWorkbookAction(
+  req: IncomingMessage,
+  res: ServerResponse,
+  api: LoomApi,
+  action: string,
+  paid = false,
+): Promise<void> {
+  await forwardWorkbookTo(req, res, api, id => `/marketListings/${encodeURIComponent(id)}${action}`, 'listingId', paid)
+}
+
+/** The official-template variant of {@link forwardWorkbookAction}. */
+async function forwardTemplateWorkbookAction(
+  req: IncomingMessage,
+  res: ServerResponse,
+  api: LoomApi,
+  action: string,
+): Promise<void> {
+  await forwardWorkbookTo(req, res, api, id => `/officialTemplates/${encodeURIComponent(id)}${action}`, 'templateId', false)
+}
+
+async function forwardWorkbookTo(
+  req: IncomingMessage,
+  res: ServerResponse,
+  api: LoomApi,
+  pathFor: (id: string) => string,
+  idParam: string,
+  paid: boolean,
+): Promise<void> {
+  try {
+    const id = new URL(req.url ?? '/', 'http://localhost').searchParams.get(idParam)
+    if (id === null || !ID_PATTERN.test(id)) throw new LoomApiError(400, `invalid ${idParam}`)
+    const body = await requestBody(req)
+    const filename = typeof body.filename === 'string' ? body.filename.trim() : ''
+    const content = typeof body.content === 'string' ? body.content.trim() : ''
+    if (filename === '' || content === '') throw new LoomApiError(400, 'filename and content are required')
+    const payload: Record<string, unknown> = { filename, content }
+    if (paid) {
+      payload.confirm = true
+      payload.clientRequestId = typeof body.clientRequestId === 'string' && CLIENT_REQUEST_ID_PATTERN.test(body.clientRequestId)
+        ? body.clientRequestId
+        : `loomloom-ui-workbook-${randomUUID()}`
+    }
+    sendJson(res, 200, await api.request(pathFor(id), { method: 'POST', body: JSON.stringify(payload) }))
+  } catch (cause) { apiFailure(res, cause) }
 }
 
 export function registerLoomRoutes(
@@ -202,6 +269,89 @@ export function registerLoomRoutes(
       const runId = new URL(req.url ?? '/', 'http://localhost').searchParams.get('runId')
       if (runId === null || !ID_PATTERN.test(runId)) { sendJson(res, 400, { error: 'invalid runId' }); return }
       try { sendJson(res, 200, await api.request(`/users/me/runs/${encodeURIComponent(runId)}`)) } catch (cause) { apiFailure(res, cause) }
+    }),
+    register(`${PREFIX}/balance`, async (req, res) => {
+      if (req.method !== 'GET' || !requireOrigin(req, res)) return
+      try { sendJson(res, 200, await api.request('/users/me/balance')) } catch (cause) { apiFailure(res, cause) }
+    }),
+    register(`${PREFIX}/creator/listings`, async (req, res) => {
+      if (req.method !== 'GET' || !requireOrigin(req, res)) return
+      try { sendJson(res, 200, await api.request('/creators/me/marketListings?pageSize=100')) } catch (cause) { apiFailure(res, cause) }
+    }),
+    register(`${PREFIX}/creator/transactions`, async (req, res) => {
+      if (req.method !== 'GET' || !requireOrigin(req, res)) return
+      try { sendJson(res, 200, await api.request('/creators/me/marketTransactions?pageSize=100')) } catch (cause) { apiFailure(res, cause) }
+    }),
+    register(`${PREFIX}/creator/earnings`, async (req, res) => {
+      if (req.method !== 'GET' || !requireOrigin(req, res)) return
+      const limit = new URL(req.url ?? '/', 'http://localhost').searchParams.get('pageSize') ?? '100'
+      if (!/^\d{1,4}$/u.test(limit)) { sendJson(res, 400, { error: 'invalid pageSize' }); return }
+      try { sendJson(res, 200, await api.request(`/creators/me/earnings?pageSize=${limit}`)) } catch (cause) { apiFailure(res, cause) }
+    }),
+    register(`${PREFIX}/templates`, async (req, res) => {
+      if (req.method !== 'GET' || !requireOrigin(req, res)) return
+      try { sendJson(res, 200, await api.request('/officialTemplates')) } catch (cause) { apiFailure(res, cause) }
+    }),
+    register(`${PREFIX}/templates/schema`, async (req, res) => {
+      if (req.method !== 'GET' || !requireOrigin(req, res)) return
+      const templateId = new URL(req.url ?? '/', 'http://localhost').searchParams.get('templateId')
+      if (templateId === null || !ID_PATTERN.test(templateId)) { sendJson(res, 400, { error: 'invalid templateId' }); return }
+      try { sendJson(res, 200, await api.request(`/officialTemplates/${encodeURIComponent(templateId)}/schema`)) } catch (cause) { apiFailure(res, cause) }
+    }),
+    register(`${PREFIX}/my-templates`, async (req, res) => {
+      if (req.method !== 'GET' || !requireOrigin(req, res)) return
+      try { sendJson(res, 200, await api.request('/users/me/templates?pageSize=50')) } catch (cause) { apiFailure(res, cause) }
+    }),
+    register(`${PREFIX}/templates/workbook/validate`, async (req, res) => {
+      if (req.method !== 'POST' || !requireOrigin(req, res)) return
+      await forwardTemplateWorkbookAction(req, res, api, ':validateWorkbook')
+    }),
+    register(`${PREFIX}/templates/workbook/precheck`, async (req, res) => {
+      if (req.method !== 'POST' || !requireOrigin(req, res)) return
+      await forwardTemplateWorkbookAction(req, res, api, ':precheckWorkbook')
+    }),
+    register(`${PREFIX}/market/workbook`, async (req, res) => {
+      if (req.method !== 'GET' || !requireOrigin(req, res)) return
+      const listingId = new URL(req.url ?? '/', 'http://localhost').searchParams.get('listingId')
+      if (listingId === null || !ID_PATTERN.test(listingId)) { sendJson(res, 400, { error: 'invalid listingId' }); return }
+      try {
+        const workbook = await api.requestBinary(`/marketListings/${encodeURIComponent(listingId)}/workbook`)
+        sendBinary(res, { ...workbook, filename: workbook.filename ?? `${listingId}.xlsx` })
+      } catch (cause) { apiFailure(res, cause) }
+    }),
+    register(`${PREFIX}/templates/workbook`, async (req, res) => {
+      if (req.method !== 'GET' || !requireOrigin(req, res)) return
+      const templateId = new URL(req.url ?? '/', 'http://localhost').searchParams.get('templateId')
+      if (templateId === null || !ID_PATTERN.test(templateId)) { sendJson(res, 400, { error: 'invalid templateId' }); return }
+      try {
+        const workbook = await api.requestBinary(`/officialTemplates/${encodeURIComponent(templateId)}/workbook`)
+        sendBinary(res, { ...workbook, filename: workbook.filename ?? `${templateId}.xlsx` })
+      } catch (cause) { apiFailure(res, cause) }
+    }),
+    register(`${PREFIX}/orchestration-input`, async (req, res) => {
+      if (req.method !== 'POST' || !requireOrigin(req, res)) return
+      try {
+        const body = await requestBody(req)
+        const filename = typeof body.filename === 'string' ? body.filename.trim() : ''
+        const content = typeof body.content === 'string' ? body.content : ''
+        if (filename === '' || content === '') throw new LoomApiError(400, 'filename and content are required')
+        sendJson(res, 200, await api.request('/orchestrationInputs:upload', {
+          method: 'POST',
+          body: JSON.stringify({ filename, content: Buffer.from(content, 'utf8').toString('base64') }),
+        }))
+      } catch (cause) { apiFailure(res, cause) }
+    }),
+    register(`${PREFIX}/market/workbook/validate`, async (req, res) => {
+      if (req.method !== 'POST' || !requireOrigin(req, res)) return
+      await forwardWorkbookAction(req, res, api, ':validateWorkbook')
+    }),
+    register(`${PREFIX}/market/workbook/quote`, async (req, res) => {
+      if (req.method !== 'POST' || !requireOrigin(req, res)) return
+      await forwardWorkbookAction(req, res, api, ':quoteWorkbook')
+    }),
+    register(`${PREFIX}/market/workbook/run`, async (req, res) => {
+      if (req.method !== 'POST' || !requireOrigin(req, res)) return
+      await forwardWorkbookAction(req, res, api, ':executeWorkbook', true)
     }),
   ]
   return () => routes.forEach(dispose => dispose())

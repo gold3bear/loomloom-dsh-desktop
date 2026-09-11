@@ -51,3 +51,49 @@ test('maps upstream failures without leaking response internals', async () => {
     await assert.rejects(() => new LoomApi(resolveLoomConfig()).request('/users/me/runs'), (error: unknown) => error instanceof LoomApiError && error.status === 401 && error.message === 'denied')
   } finally { globalThis.fetch = originalFetch }
 })
+
+test('requestBinary decodes a workbook download and sanitizes the suggested filename', async () => {
+  const originalFetch = globalThis.fetch
+  const workbook = Buffer.from('xlsx-bytes')
+  globalThis.fetch = async () => new Response(workbook, {
+    status: 200,
+    headers: {
+      'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'content-disposition': 'attachment; filename="../../escape.xlsx"',
+    },
+  })
+  try {
+    const payload = await new LoomApi(resolveLoomConfig()).requestBinary('/marketListings/listing-1/workbook')
+    assert.equal(Buffer.from(payload.base64, 'base64').toString('utf8'), 'xlsx-bytes')
+    assert.equal(payload.byteLength, workbook.byteLength)
+    // Path separators never survive into the caller's target directory.
+    assert.equal(payload.filename, '.._.._escape.xlsx')
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('requestBinary omits the filename when the upstream sends no disposition header', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(Buffer.from('x'), { status: 200 })
+  try {
+    const payload = await new LoomApi(resolveLoomConfig()).requestBinary('/officialTemplates/official-1/workbook')
+    assert.equal(payload.filename, undefined)
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('requestBinary surfaces a failed workbook status without leaking the body', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response('denied', { status: 403 })
+  try {
+    await assert.rejects(
+      () => new LoomApi(resolveLoomConfig()).requestBinary('/marketListings/listing-1/workbook'),
+      (error: unknown) => error instanceof LoomApiError && error.status === 403,
+    )
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('requestBinary rejects cross-origin-like paths before issuing a request', async () => {
+  await assert.rejects(
+    () => new LoomApi(resolveLoomConfig()).requestBinary('//example.com/steal'),
+    /absolute and local/,
+  )
+})

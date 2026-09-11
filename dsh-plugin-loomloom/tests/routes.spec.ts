@@ -18,6 +18,7 @@ async function startServer(options: {
   readonly credentialStatus?: () => Promise<unknown>
   readonly clearCredential?: () => Promise<void>
   readonly apiResponse?: unknown
+  readonly binaryResponse?: unknown
   readonly browserLogin?: Pick<LoomBrowserLoginService, 'start' | 'status' | 'cancel'>
   readonly bootstrap?: () => Promise<unknown>
   readonly account?: () => Promise<unknown>
@@ -49,6 +50,15 @@ async function startServer(options: {
       calls.push({ path, ...(init === undefined ? {} : { init }) })
       return options.apiResponse ?? { id: 'listing-1', displayName: 'Safe SkillBot' }
     },
+    async requestBinary(path: string, init?: RequestInit): Promise<unknown> {
+      calls.push({ path, ...(init === undefined ? {} : { init }) })
+      return options.binaryResponse ?? {
+        base64: Buffer.from('workbook-bytes').toString('base64'),
+        byteLength: 14,
+        contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        filename: 'input.xlsx',
+      }
+    },
   } as never,
   options.credentialStatus as (() => Promise<never>) ?? (async () => ({ configured: false })),
   options.browserLogin as LoomBrowserLoginService | undefined,
@@ -65,16 +75,25 @@ async function startServer(options: {
   }
 }
 
-async function read(server: TestServer, path: string, headers: Record<string, string> = {}, method = 'GET'): Promise<{ readonly status: number, readonly body: unknown, readonly headers: IncomingMessage['headers'] }> {
+async function readRaw(server: TestServer, path: string, headers: Record<string, string> = {}, method = 'GET', body?: string): Promise<{ readonly status: number, readonly raw: Buffer, readonly headers: IncomingMessage['headers'] }> {
   return await new Promise((resolve, reject) => {
     const req = request({ hostname: '127.0.0.1', port: server.port, path, headers, method }, res => {
       const chunks: Buffer[] = []
       res.on('data', chunk => chunks.push(Buffer.from(chunk)))
-      res.on('end', () => resolve({ status: res.statusCode ?? 0, body: JSON.parse(Buffer.concat(chunks).toString('utf8')), headers: res.headers }))
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, raw: Buffer.concat(chunks), headers: res.headers }))
     })
     req.once('error', reject)
+    if (body !== undefined) req.write(body)
     req.end()
   })
+}
+
+async function read(server: TestServer, path: string, headers: Record<string, string> = {}, method = 'GET', body?: string): Promise<{ readonly status: number, readonly body: unknown, readonly headers: IncomingMessage['headers'] }> {
+  const result = await readRaw(server, path, headers, method, body)
+  const text = result.raw.toString('utf8')
+  let parsed: unknown = null
+  try { parsed = text === '' ? null : JSON.parse(text) } catch { parsed = text }
+  return { status: result.status, body: parsed, headers: result.headers }
 }
 
 test('Host routes require the DSH loopback authority before reading credentials or market data', async () => {
@@ -262,4 +281,167 @@ test('market quote and execute routes enforce bounded rows and explicit confirma
   } finally {
     await server.close()
   }
+})
+
+test('balance, creator and template read routes forward to the matching upstream endpoints', async () => {
+  const server = await startServer({ apiResponse: { items: [] } })
+  const host = `127.0.0.1:${server.port}`
+  try {
+    const balance = await read(server, '/api/loomloom/balance', { host })
+    assert.equal(balance.status, 200)
+    const listings = await read(server, '/api/loomloom/creator/listings', { host })
+    assert.equal(listings.status, 200)
+    const transactions = await read(server, '/api/loomloom/creator/transactions', { host })
+    assert.equal(transactions.status, 200)
+    const earnings = await read(server, '/api/loomloom/creator/earnings?pageSize=25', { host })
+    assert.equal(earnings.status, 200)
+    const templates = await read(server, '/api/loomloom/templates', { host })
+    assert.equal(templates.status, 200)
+    const schema = await read(server, '/api/loomloom/templates/schema?templateId=official-1', { host })
+    assert.equal(schema.status, 200)
+    assert.deepEqual(server.calls.map(call => call.path), [
+      '/users/me/balance',
+      '/creators/me/marketListings?pageSize=100',
+      '/creators/me/marketTransactions?pageSize=100',
+      '/creators/me/earnings?pageSize=25',
+      '/officialTemplates',
+      '/officialTemplates/official-1/schema',
+    ])
+  } finally { await server.close() }
+})
+
+test('creator and template routes reject malformed ids before any upstream call', async () => {
+  const server = await startServer()
+  const host = `127.0.0.1:${server.port}`
+  try {
+    const schema = await read(server, '/api/loomloom/templates/schema?templateId=../../secret', { host })
+    assert.equal(schema.status, 400)
+    const workbook = await read(server, '/api/loomloom/market/workbook?listingId=../../secret', { host })
+    assert.equal(workbook.status, 400)
+    const earnings = await read(server, '/api/loomloom/creator/earnings?pageSize=abc', { host })
+    assert.equal(earnings.status, 400)
+    assert.equal(server.calls.length, 0)
+  } finally { await server.close() }
+})
+
+test('workbook download streams the binary back with an attachment filename', async () => {
+  const server = await startServer()
+  const host = `127.0.0.1:${server.port}`
+  try {
+    const result = await readRaw(server, '/api/loomloom/market/workbook?listingId=listing-1', { host })
+    assert.equal(result.status, 200)
+    assert.equal(result.raw.toString('utf8'), 'workbook-bytes')
+    assert.match(String(result.headers['content-disposition']), /input\.xlsx/)
+    assert.deepEqual(server.calls, [{ path: '/marketListings/listing-1/workbook' }])
+  } finally { await server.close() }
+})
+
+test('orchestration input upload base64 encodes the JSONL content', async () => {
+  const server = await startServer({ apiResponse: { inputFileId: 'input-1', rowCount: 2 } })
+  const host = `127.0.0.1:${server.port}`
+  try {
+    const result = await read(
+      server,
+      '/api/loomloom/orchestration-input',
+      { host, 'content-type': 'application/json' },
+      'POST',
+      JSON.stringify({ filename: 'rows.jsonl', content: '{"a":1}\n{"a":2}\n' }),
+    )
+    assert.equal(result.status, 200)
+    const call = server.calls[0]!
+    assert.equal(call.path, '/orchestrationInputs:upload')
+    const body = JSON.parse(String(call.init?.body)) as Record<string, unknown>
+    assert.equal(body.filename, 'rows.jsonl')
+    assert.equal(Buffer.from(String(body.content), 'base64').toString('utf8'), '{"a":1}\n{"a":2}\n')
+  } finally { await server.close() }
+})
+
+test('workbook run requires an explicit confirmation and a client request id', async () => {
+  const server = await startServer({ apiResponse: { runId: 'run-1' } })
+  const host = `127.0.0.1:${server.port}`
+  try {
+    const missing = await read(server, '/api/loomloom/market/workbook/run?listingId=listing-1', { host, 'content-type': 'application/json' }, 'POST', JSON.stringify({}))
+    assert.equal(missing.status, 400)
+    assert.equal(server.calls.length, 0)
+
+    const run = await read(
+      server,
+      '/api/loomloom/market/workbook/run?listingId=listing-1',
+      { host, 'content-type': 'application/json' },
+      'POST',
+      JSON.stringify({ filename: 'filled.xlsx', content: 'ZmlsbGVk' }),
+    )
+    assert.equal(run.status, 200)
+    const body = JSON.parse(String(server.calls[0]!.init?.body)) as Record<string, unknown>
+    assert.equal(body.confirm, true)
+    assert.match(String(body.clientRequestId), /^loomloom-ui-workbook-/)
+    assert.equal(body.filename, 'filled.xlsx')
+
+    // Quote and validate stay unconfirmed: they never spend money.
+    await read(server, '/api/loomloom/market/workbook/quote?listingId=listing-1', { host, 'content-type': 'application/json' }, 'POST', JSON.stringify({ filename: 'a.xlsx', content: 'YWJj' }))
+    const quoteBody = JSON.parse(String(server.calls[1]!.init?.body)) as Record<string, unknown>
+    assert.equal('confirm' in quoteBody, false)
+  } finally { await server.close() }
+})
+
+test('private template and official template workbook routes forward correctly', async () => {
+  const server = await startServer({ apiResponse: { items: [], valid: true } })
+  const host = `127.0.0.1:${server.port}`
+  try {
+    const mine = await read(server, '/api/loomloom/my-templates', { host })
+    assert.equal(mine.status, 200)
+    const validate = await read(
+      server,
+      '/api/loomloom/templates/workbook/validate?templateId=official-1',
+      { host, 'content-type': 'application/json' },
+      'POST',
+      JSON.stringify({ filename: 'filled.xlsx', content: 'ZmlsbGVk' }),
+    )
+    assert.equal(validate.status, 200)
+    const precheck = await read(
+      server,
+      '/api/loomloom/templates/workbook/precheck?templateId=official-1',
+      { host, 'content-type': 'application/json' },
+      'POST',
+      JSON.stringify({ filename: 'filled.xlsx', content: 'ZmlsbGVk' }),
+    )
+    assert.equal(precheck.status, 200)
+    assert.deepEqual(server.calls.map(call => call.path), [
+      '/users/me/templates?pageSize=50',
+      '/officialTemplates/official-1:validateWorkbook',
+      '/officialTemplates/official-1:precheckWorkbook',
+    ])
+    // Template precheck is a cost estimate, never a confirmation.
+    const body = JSON.parse(String(server.calls[2]!.init?.body)) as Record<string, unknown>
+    assert.equal('confirm' in body, false)
+
+    const bad = await read(
+      server,
+      '/api/loomloom/templates/workbook/validate?templateId=../../secret',
+      { host, 'content-type': 'application/json' },
+      'POST',
+      JSON.stringify({ filename: 'x.xlsx', content: 'YWJj' }),
+    )
+    assert.equal(bad.status, 400)
+    assert.equal(server.calls.length, 3)
+  } finally { await server.close() }
+})
+
+test('market workbook download uses the real upstream content-disposition filename', async () => {
+  const server = await startServer({
+    binaryResponse: {
+      base64: Buffer.from('xlsx').toString('base64'),
+      byteLength: 4,
+      contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      filename: '019fccfe-c54c-73dc-b3ae-716b6589ae5d-1.xlsx',
+    },
+  })
+  const host = `127.0.0.1:${server.port}`
+  try {
+    const result = await readRaw(server, '/api/loomloom/market/workbook?listingId=listing-1', { host })
+    assert.equal(result.status, 200)
+    assert.equal(result.raw.toString('utf8'), 'xlsx')
+    assert.match(String(result.headers['content-type']), /spreadsheetml/)
+    assert.match(String(result.headers['content-disposition']), /019fccfe-c54c-73dc-b3ae-716b6589ae5d-1\.xlsx/)
+  } finally { await server.close() }
 })

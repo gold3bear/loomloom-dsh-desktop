@@ -48,3 +48,29 @@ corepack yarn workspace dsh-plugin-loomloom test --test-name-pattern='complete n
 ```
 
 For a live account, use the Settings page to confirm that the credential is configured, then use only `loomloom_list_skillbots` and `loomloom_get_skillbot` in DSH chat. A live quote is non-executing, but it may be business-visible; do not call `loomloom_execute_skillbot` unless the displayed server quote is correct and the DSH approval prompt is explicitly accepted. The remaining live acceptance gap is a disposable Market listing/run that can be exercised without creating a charge; production listings must never be used as a smoke target.
+
+## Tool surface
+
+DSH exposes thirteen `loomloom_*` tools. Ten are read-only:
+
+| Tool | Endpoint |
+| --- | --- |
+| `loomloom_list_skillbots` | `GET /marketListings` (full dataset, keyword matched locally) |
+| `loomloom_get_skillbot` | `GET /marketListings/{id}` |
+| `loomloom_get_run` | `GET /users/me/runs/{id}` |
+| `loomloom_get_run_results` | `GET /users/me/runs/{id}/resultRows` + `/artifacts` |
+| `loomloom_get_balance` | `GET /users/me/balance` |
+| `loomloom_list_my_listings` | `GET /creators/me/marketListings` |
+| `loomloom_list_creator_transactions` | `GET /creators/me/marketTransactions` |
+| `loomloom_list_official_templates` | `GET /officialTemplates` |
+| `loomloom_get_template_schema` | `GET /officialTemplates/{id}/schema` |
+| `loomloom_list_my_templates` | `GET /users/me/templates` |
+
+Three tools change state and are gated by the DSH approval prompt:
+
+- `loomloom_prepare_execution` — creates a quote and a short-lived draft; no charge and no upstream write.
+- `loomloom_execute_skillbot` — runs a prepared draft and **incurs the quoted fee**.
+- `loomloom_publish_listing` — publishes a template version to the Market and **starts a review**; ask the user for the display name, template ids and fixed fee before calling it.
+
+Workbook (`.xlsx`) flows are not tools. A tool result is text, so a workbook cannot cross that boundary; the client drives them through host routes instead: `GET /api/loomloom/market/workbook` and `GET /api/loomloom/templates/workbook` download a template, and `POST /api/loomloom/market/workbook/{validate,quote,run}` and `POST /api/loomloom/templates/workbook/{validate,precheck}` submit a filled one. Only the Market `run` route is billable, and it always sends `confirm: true` with an idempotency key.
+

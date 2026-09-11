@@ -108,3 +108,99 @@ test('polls a queued run until it reaches a terminal state with bounded backoff'
   })
   assert.deepEqual(delays, [10])
 })
+
+test('lists the full market dataset across pages and matches a keyword locally', async () => {
+  function entry(id: string, name: string, description: string) {
+    return {
+      id, displayName: name, description,
+      executionAvailabilityStatus: 'available',
+      taskFixedFee: { amount: '0.5' }, listingVersionId: 'version-1',
+    }
+  }
+  const calls: string[] = []
+  const api = {
+    async request(path: string): Promise<unknown> {
+      calls.push(path)
+      if (path === '/marketListings?pageSize=100') {
+        return {
+          items: [entry('listing-1', 'Copywriter', 'Generates copy')],
+          nextPageToken: 'page-2',
+        }
+      }
+      if (path === '/marketListings?pageSize=100&pageToken=page-2') {
+        return {
+          items: [entry('listing-2', '翻译助手', '把中文翻译成英文')],
+          nextPageToken: 'page-3',
+        }
+      }
+      if (path === '/marketListings?pageSize=100&pageToken=page-3') {
+        return { items: [] }
+      }
+      throw new Error(`unexpected path ${path}`)
+    },
+  }
+  const service = new LoomSkillbotService(api as never)
+
+  const all = await service.list()
+  assert.deepEqual(all.map(item => item.id), ['listing-1', 'listing-2'])
+  assert.deepEqual(calls, [
+    '/marketListings?pageSize=100',
+    '/marketListings?pageSize=100&pageToken=page-2',
+    '/marketListings?pageSize=100&pageToken=page-3',
+  ])
+
+  // Keyword matching is local, case-insensitive and non-ASCII aware.
+  assert.deepEqual((await service.list(undefined, { keyword: 'COPY' })).map(item => item.id), ['listing-1'])
+  assert.deepEqual((await service.list(undefined, { keyword: '翻译' })).map(item => item.id), ['listing-2'])
+  assert.deepEqual(await service.list(undefined, { keyword: 'missing' }), [])
+  // Multiple terms match against name/description/id and rank by hit count.
+  const ranked = await service.list(undefined, { keyword: 'copy writer generator' })
+  assert.deepEqual(ranked.map(item => item.id), ['listing-1'])
+  // Unavailable listings are never returned even when the keyword matches.
+  const withUnavailable = new LoomSkillbotService({
+    async request(path: string): Promise<unknown> {
+      if (path === '/marketListings?pageSize=100') {
+        return {
+          items: [
+            { ...entry('listing-1', 'Copywriter', 'Generates copy'), executionAvailabilityStatus: 'unavailable' },
+          ],
+        }
+      }
+      throw new Error(`unexpected path ${path}`)
+    },
+  } as never)
+  assert.deepEqual(await withUnavailable.list(), [])
+})
+
+test('converts raw-unit *T monetary fields when the converted object is absent', async () => {
+  const rawUnitsListing = {
+    ...listing(),
+    taskFixedFee: undefined,
+    taskFixedFeeT: 5_000_000, // 5,000,000 / 1e7 = 0.5
+    currency: 'CNY',
+  }
+  delete rawUnitsListing.taskFixedFee
+  const api = {
+    async request(path: string): Promise<unknown> {
+      if (path === '/marketListings/listing-1') return rawUnitsListing
+      if (path.endsWith(':quote')) return { estimatedBuyerPayableT: 15_000_000, taskFixedFeeT: 5_000_000, currency: 'CNY' }
+      throw new Error(`unexpected path ${path}`)
+    },
+  }
+  const service = new LoomSkillbotService(api as never)
+  const agent = {}
+  const draft = await service.prepare(agent, 'listing-1', undefined, [{ topic: 'Coffee', count: 3 }])
+  assert.equal(draft.skillbot.fixedFee, '0.5')
+  assert.deepEqual(draft.quote, { estimatedBuyerPayable: '1.5', currency: 'CNY', taskFixedFee: '0.5' })
+  // Converted object still wins over the raw-unit integer when both exist.
+  const both = {
+    async request(path: string): Promise<unknown> {
+      if (path === '/marketListings/listing-1') return { ...rawUnitsListing, taskFixedFee: { amount: '0.75', currency: 'CNY' } }
+      if (path.endsWith(':quote')) return { estimatedBuyerPayable: { amount: '2.25', currency: 'CNY' }, estimatedBuyerPayableT: 99_999_999, taskFixedFeeT: 5_000_000, currency: 'CNY' }
+      throw new Error(`unexpected path ${path}`)
+    },
+  }
+  const bothDraft = await new LoomSkillbotService(both as never).prepare(agent, 'listing-1', undefined, [{ topic: 'Coffee', count: 3 }])
+  assert.equal(bothDraft.skillbot.fixedFee, '0.75')
+  assert.deepEqual(bothDraft.quote, { estimatedBuyerPayable: '2.25', currency: 'CNY', taskFixedFee: '0.5' })
+})
