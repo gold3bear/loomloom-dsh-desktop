@@ -13,8 +13,10 @@ import {
   readSkillbotsPage,
   readSkillbot,
   readSkillbots,
+  readStorefront,
   quoteSkillbot,
   executeSkillbot,
+  uploadInputAsset,
 } from '../src/client/api.js'
 
 const originalFetch = globalThis.fetch
@@ -61,7 +63,7 @@ test('client maps a nested detail and public input schema only', async () => {
   } } }))
   assert.deepEqual(await readSkillbot('listing-1'), {
     id: 'listing-1', name: 'Writer', description: '', available: true,
-    fields: [{ key: 'tone', label: 'Tone', required: true, valueType: 'string', enumValues: ['formal', 'casual'] }],
+    fields: [{ key: 'tone', label: 'Tone', required: true, valueType: 'string', order: Number.MAX_SAFE_INTEGER, enumValues: ['formal', 'casual'] }],
   })
 })
 
@@ -177,4 +179,99 @@ test('client sends quoted and confirmed SkillBot requests with same-origin route
   assert.equal(executionBody.confirm, true)
   assert.equal(executionBody.confirmationToken, 'quote-token-1')
   assert.match(String(executionBody.clientRequestId), /^loomloom-ui-/u)
+})
+
+test('client reads the configured storefront, mapping its published input fields', async () => {
+  Object.defineProperty(globalThis, 'window', { value: { location: { origin: 'http://127.0.0.1:4312' } }, configurable: true, writable: true })
+  const urls: string[] = []
+  globalThis.fetch = async input => {
+    urls.push(String(input))
+    return new Response(JSON.stringify({
+      configured: true,
+      source: urls.length === 1 ? 'creator' : 'something-else',
+      entries: [
+        {
+          id: 'listing-1',
+          name: 'Visual deck',
+          description: 'One line to a deck.',
+          available: true,
+          fixedFee: '1.0000000',
+          currency: 'CNY',
+          version: 'v1',
+          updatedAt: '2026-09-10T03:20:53Z',
+          creatorNickname: 'Mat',
+          inputSchemaSnapshot: JSON.stringify({ fields: [{ key: 'topic', title: 'Topic', order: 1, value_type: 'string' }] }),
+        },
+        { id: 'listing-2', name: 'Pinned one' },
+        { name: 'without an id' },
+      ],
+      unavailable: ['gone-1', 7],
+      fetchedAt: '2026-09-10T04:00:00Z',
+      stale: true,
+      error: 'listing-2 could not be read',
+      source_detail: 'must-not-cross',
+    }))
+  }
+  assert.deepEqual(await readStorefront(true), {
+    configured: true,
+    source: 'creator',
+    entries: [
+      {
+        id: 'listing-1',
+        name: 'Visual deck',
+        description: 'One line to a deck.',
+        available: true,
+        fields: [{ key: 'topic', label: 'Topic', required: false, valueType: 'string', order: 1 }],
+        fixedFee: '1.0000000',
+        currency: 'CNY',
+        version: 'v1',
+        updatedAt: '2026-09-10T03:20:53Z',
+        creatorNickname: 'Mat',
+      },
+      { id: 'listing-2', name: 'Pinned one', description: '', available: false, fields: [] },
+    ],
+    unavailable: ['gone-1'],
+    fetchedAt: '2026-09-10T04:00:00Z',
+    stale: true,
+    error: 'listing-2 could not be read',
+  })
+  // An unknown source degrades to `none` rather than crossing the wire verbatim.
+  assert.equal((await readStorefront()).source, 'none')
+  assert.deepEqual(urls, [
+    'http://127.0.0.1:4312/api/loomloom/storefront?refresh=1',
+    'http://127.0.0.1:4312/api/loomloom/storefront',
+  ])
+})
+
+test('client uploads a file input through the Host and keeps only its id', async () => {
+  const requests: Array<{ url: string, init: RequestInit }> = []
+  globalThis.fetch = async (input, init) => {
+    requests.push({ url: String(input), init: init ?? {} })
+    return new Response(JSON.stringify({
+      inputAssetId: 'asset-1',
+      filename: 'deck.html',
+      mimeType: 'text/html',
+      sizeBytes: 2048,
+      signedUrl: 'https://must-not-cross.example/deck.html',
+    }))
+  }
+  assert.deepEqual(await uploadInputAsset('deck.html', 'text/html', 'PGh0bWw+'), {
+    inputAssetId: 'asset-1',
+    filename: 'deck.html',
+    mimeType: 'text/html',
+    sizeBytes: 2048,
+  })
+  assert.equal(requests[0]?.url, '/api/loomloom/inputAssets')
+  assert.equal(requests[0]?.init.method, 'POST')
+  assert.deepEqual(JSON.parse(String(requests[0]?.init.body)), {
+    filename: 'deck.html',
+    contentType: 'text/html',
+    content: 'PGh0bWw+',
+  })
+
+  globalThis.fetch = async () => new Response(JSON.stringify({ filename: 'deck.html' }))
+  await assert.rejects(
+    () => uploadInputAsset('deck.html', 'text/html', 'PGh0bWw+'),
+    (error: unknown) => error instanceof LoomClientApiError && error.status === 502,
+  )
 })

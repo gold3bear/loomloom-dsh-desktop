@@ -30,6 +30,9 @@ export default defineConfig([
       '@deepseek-ai/cordis',
       '@deepseek-ai/dsh-client-locale/client',
       '@deepseek-ai/dsh-client-ui-layout/client',
+      // Shell-seeded platform module: the bundle must request the shared
+      // identity rather than inline a second copy of the shared atoms.
+      '@deepseek-ai/dsh-client-ui-primitives',
       '@deepseek-ai/dsh-client-ui-renderer/client',
       '@deepseek-ai/dsh-client-ui-settings/client',
       '@deepseek-ai/dsh-client-ui-slots',

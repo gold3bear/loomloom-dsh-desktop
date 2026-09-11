@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { setTimeout as scheduleTimeout } from 'node:timers/promises'
 import { LoomApi, LoomApiError } from './loom-api.js'
+import { capArtifactText } from './result-presentation.js'
 
 const MAX_INPUT_ROWS = 100
 const DRAFT_TTL_MS = 10 * 60_000
@@ -25,7 +26,11 @@ export const TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set([
   'errored',
   'cancelled',
   'canceled',
+  // The live `/users/me/runs` list emits `partially_failed`. The shorter
+  // `partial_failed` spelling is kept because it has appeared elsewhere in the
+  // API surface; a missed terminal state would leave a poller spinning forever.
   'partial_failed',
+  'partially_failed',
 ])
 
 /**
@@ -134,7 +139,13 @@ export interface RunArtifact {
   readonly label: string
   readonly mimeType?: string
   readonly accessUrl?: string
-  /** Inline text payload when the upstream returns the artifact body directly. */
+  /**
+   * Inline text payload when the upstream returns the artifact body directly.
+   *
+   * This is the run's own output, and it is the one field whose size the upstream
+   * controls, so it is bounded by `capArtifactText` before it reaches either the
+   * model or the tool card.
+   */
   readonly inlineText?: string
 }
 
@@ -442,7 +453,10 @@ function artifacts(value: unknown): readonly RunArtifact[] {
     const mimeType = text(item.mimeType)
     const accessUrl = text(item.accessUrl)
     if (accessUrl !== '' && !/^https:\/\//u.test(accessUrl)) throw new LoomApiError(502, `loomloom returned invalid artifact URL ${index + 1}`)
-    const inlineText = pickText(item, ['inlineText', 'inline_text', 'content', 'text'])
+    // The run's output is kept — without it neither the card nor the model can say
+    // what the run produced — but only within the presentation budget: this is the
+    // field the upstream sizes, not us.
+    const inlineText = capArtifactText(pickText(item, ['inlineText', 'inline_text', 'content', 'text']))
     return {
       id, label,
       ...(mimeType === '' ? {} : { mimeType }),

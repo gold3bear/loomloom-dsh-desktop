@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import { IconCheckOutline16, IconWarningOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   cancelBrowserLogin,
   type LoomBrowserLoginReason,
@@ -9,8 +10,7 @@ import {
   readBrowserLoginStatus,
   startBrowserLogin,
 } from './api.js'
-
-type ConnectStage = 'loading' | 'unconfigured' | 'authorizing' | 'model-selection' | 'connected'
+import { connectStage, type ConnectStage } from './connect-stage.js'
 
 export interface LoomloomConnectFlowProps extends PropsLocale<'loomloom'> {
   /** Re-read non-secret readiness facts after the parent refreshes its data. */
@@ -118,19 +118,11 @@ export function LoomloomConnectFlow({
       setStage('loading')
       setError(undefined)
       const value = await readBootstrap()
-      if (
-        value.credential.configured
-        && value.loom === 'ready'
-        && value.router === 'ready'
-        && value.model.ready
-      ) {
+      const next = connectStage(value)
+      if (next === 'connected') {
         setStage('connected')
         if (!startedHere.current) onAlreadyConfigured?.()
-      } else if (
-        value.credential.configured
-        && value.loom === 'ready'
-        && value.router === 'ready'
-      ) {
+      } else if (next === 'model-selection') {
         setStage('model-selection')
       } else {
         setStage('unconfigured')
@@ -267,7 +259,7 @@ export function LoomloomConnectFlow({
           <li data-current={false}>{t('savingConnection')}</li>
         </ol>
         {browserWasBlocked && <div className="loomloomInlineWarning" role="status">
-          <p>{t('browserUnavailable')}</p>
+          <p><IconWarningOutline16 size={14} />{t('browserUnavailable')}</p>
           <button className="loomloomButton" type="button" onClick={() => void copyAuthorizationLink()}>{t('copyAuthorizationLink')}</button>
         </div>}
         <div className="loomloomFlowActions">
@@ -278,13 +270,17 @@ export function LoomloomConnectFlow({
         <p className="loomloomFlowDescription">{t('modelSelectionRequired')}</p>
         <div className="loomloomFlowActions">
           {onOpenModels !== undefined && <button className="loomloomButton loomloomButtonPrimary" type="button" onClick={onOpenModels}>{t('openModels')}</button>}
+          {/* Every stage needs a way out: this one used to offer nothing when no
+              sign-in session was in flight, which trapped an already-connected
+              user behind a dialog that reappeared on every mount. */}
+          {onLater !== undefined && <button className="loomloomButton" type="button" onClick={onLater}>{t('modelSelectionLater')}</button>}
           {sessionRef.current !== undefined && <button className="loomloomButton" type="button" onClick={() => void cancel()}>{t('cancelSignIn')}</button>}
         </div>
       </>}
       {stage === 'connected' && <>
         <div className="loomloomConnectionChecks" role="status">
-          <span>✓ {t('loomReady')}</span>
-          <span>✓ {t('chatModelReady')}</span>
+          <span><IconCheckOutline16 size={12} />{t('loomReady')}</span>
+          <span><IconCheckOutline16 size={12} />{t('chatModelReady')}</span>
         </div>
         <p className="loomloomFlowDescription">{t('connectedHint')}</p>
         {onboarding && <div className="loomloomFlowActions">

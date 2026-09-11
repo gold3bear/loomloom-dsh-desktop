@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { clearLoomToken, createLoomCredentialStatusReader } from '../src/credentials.js'
 import { resolveLoomConfig } from '../src/loom-api.js'
-import { resolveLoomConfig } from '../src/loom-api.js'
 
 test('reports credential presence without returning any secret value', async () => {
   const read = createLoomCredentialStatusReader({

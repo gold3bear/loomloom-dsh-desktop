@@ -1,18 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { LoomloomConnectFlow } from './LoomloomConnectFlow.js'
 import {
-  LoomClientApiError,
   type LoomCredentialStatus,
-  type LoomListing,
   type LoomRun,
-  type LoomSkillbotDetail,
-  readBootstrap,
+  type LoomStorefrontEntry,
+  readCredentialStatus,
   readRun,
   readRuns,
   logout,
-  readSkillbot,
-  readSkillbots,
+  readStorefront,
 } from './api.js'
 
 export type LoomloomSettingsTabProps = PropsRuntime<'settings.plugins.tab'> & PropsLocale<'loomloom'>
@@ -23,44 +20,48 @@ function failureMessage(cause: unknown, fallback: string): string {
 
 export function LoomloomSettingsTab({ t }: LoomloomSettingsTabProps) {
   const [credentials, setCredentials] = useState<LoomCredentialStatus>({ configured: false })
-  const [skillbots, setSkillbots] = useState<readonly LoomListing[]>([])
+  // The Settings surface lists the same storefront as the Market surface. It must
+  // not fall back to `GET /api/loomloom/market`: that route returns every
+  // creator's published SkillBot, which a single-creator build must not expose.
+  const [skillbots, setSkillbots] = useState<readonly LoomStorefrontEntry[]>([])
   const [runs, setRuns] = useState<readonly LoomRun[]>([])
-  const [selected, setSelected] = useState<LoomSkillbotDetail | undefined>()
+  const [selected, setSelected] = useState<LoomStorefrontEntry | undefined>()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | undefined>()
+  const [storefrontNotice, setStorefrontNotice] = useState<string | undefined>()
   const [runLoading, setRunLoading] = useState(false)
   const [signingOut, setSigningOut] = useState(false)
   const [connectRefreshKey, setConnectRefreshKey] = useState(0)
-  const detailController = useRef<AbortController>()
 
   const load = useCallback(async (signal?: AbortSignal) => {
     setLoading(true)
     setError(undefined)
+    setStorefrontNotice(undefined)
     try {
-      const bootstrap = await readBootstrap(signal)
+      // Credential *presence* is local, so this no longer waits on the verified
+      // bootstrap's two upstream round trips before showing anything.
+      const status = await readCredentialStatus(signal)
       if (signal?.aborted) return
-      setCredentials(bootstrap.credential)
-      if (!bootstrap.credential.configured) {
+      setCredentials(status)
+      if (!status.configured) {
         setSkillbots([])
         setRuns([])
         setSelected(undefined)
         return
       }
-      const [listings, recentRuns] = await Promise.all([readSkillbots(signal), readRuns(signal)])
+      const [storefront, recentRuns] = await Promise.all([readStorefront(false, signal), readRuns(signal)])
       if (signal?.aborted) return
-      setSkillbots(listings)
+      setSkillbots(storefront.entries)
       setRuns(recentRuns)
+      setStorefrontNotice(storefront.error !== undefined
+        ? t('staleStorefront')
+        : storefront.configured
+          ? undefined
+          : storefront.source === 'creator-key-missing'
+            ? t('storefrontCreatorKeyMissing')
+            : t('storefrontUnconfigured'))
     } catch (cause) {
       if (signal?.aborted) return
-      if (cause instanceof LoomClientApiError && cause.status === 401) {
-        setCredentials({ configured: false })
-        setSkillbots([])
-        setRuns([])
-        setSelected(undefined)
-        setConnectRefreshKey(value => value + 1)
-        setError(t('signInFailed'))
-        return
-      }
       setError(failureMessage(cause, t('error')))
     } finally {
       if (!signal?.aborted) setLoading(false)
@@ -82,24 +83,15 @@ export function LoomloomSettingsTab({ t }: LoomloomSettingsTabProps) {
   useEffect(() => {
     const controller = new AbortController()
     void load(controller.signal)
-    return () => {
-      controller.abort()
-      detailController.current?.abort()
-    }
+    return () => { controller.abort() }
   }, [load])
 
-  const select = useCallback(async (listingId: string) => {
-    detailController.current?.abort()
-    const controller = new AbortController()
-    detailController.current = controller
+  // A storefront entry already carries its published input schema, so opening the
+  // detail costs nothing; the previous implementation spent a request per click.
+  const select = useCallback((entry: LoomStorefrontEntry) => {
     setError(undefined)
-    try {
-      const detail = await readSkillbot(listingId, controller.signal)
-      if (!controller.signal.aborted) setSelected(detail)
-    } catch (cause) {
-      if (!controller.signal.aborted) setError(failureMessage(cause, t('error')))
-    }
-  }, [t])
+    setSelected(entry)
+  }, [])
 
   const signOut = useCallback(async () => {
     setSigningOut(true)
@@ -146,8 +138,9 @@ export function LoomloomSettingsTab({ t }: LoomloomSettingsTabProps) {
         </button>
       </div>}
       {error !== undefined && <div className="loomloomError" role="alert">{error}</div>}
+      {storefrontNotice !== undefined && <div className="loomloomNote" role="status"><p>{storefrontNotice}</p></div>}
 
-      {credentials.configured && !loading && error === undefined && skillbots.length === 0 && <div className="loomloomEmpty">{t('empty')}</div>}
+      {credentials.configured && !loading && error === undefined && storefrontNotice === undefined && skillbots.length === 0 && <div className="loomloomEmpty">{t('empty')}</div>}
       {credentials.configured && skillbots.length > 0 && (
         <div className="loomloomGrid" aria-label={t('title')}>
           {skillbots.map(skillbot => (
@@ -156,7 +149,7 @@ export function LoomloomSettingsTab({ t }: LoomloomSettingsTabProps) {
               type="button"
               key={skillbot.id}
               aria-pressed={selected?.id === skillbot.id}
-              onClick={() => { void select(skillbot.id) }}
+              onClick={() => { select(skillbot) }}
             >
               <div className="loomloomCardTop">
                 <h3>{skillbot.name}</h3>
