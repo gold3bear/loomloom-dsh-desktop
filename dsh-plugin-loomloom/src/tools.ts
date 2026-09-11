@@ -2,6 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-user-approval'
 import { LoomApiError } from './loom-api.js'
+import { renderArtifacts } from './result-presentation.js'
 import { LoomSkillbotService, type DraftToolValue, type ExecutionDraft, type MarketQuote, type SkillbotSummary, type SkillbotToolValue } from './skillbots.js'
 
 const SKILLBOT_SCHEMA = {
@@ -318,23 +319,23 @@ export function registerLoomTools(ctx: Context, service: LoomSkillbotService): (
                 type: 'object', additionalProperties: false,
                 properties: {
                   id: { type: 'string', required: true }, label: { type: 'string', required: true },
-                  mimeType: { type: 'string' }, accessUrl: { type: 'string' }, inlineText: { type: 'string' },
+                  mimeType: { type: 'string' }, accessUrl: { type: 'string' },
+                  inlineText: { type: 'string', description: 'The artifact content. JSON output is rendered as a table on the card.' },
                 },
               },
             },
           },
         },
-        render: (_args, value) => {
-          const blocks: { type: 'text', text: string }[] = [{
-            type: 'text',
-            text: `${value.status}: ${value.completedRows}/${value.totalRows} completed, ${value.failedRows} failed. ${value.artifacts.length} output artifact(s) available.`,
-          }]
-          for (const artifact of value.artifacts) {
-            if (typeof artifact.inlineText !== 'string' || artifact.inlineText.trim() === '') continue
-            blocks.push({ type: 'text', text: `--- ${artifact.label} ---\n${artifact.inlineText}` })
-          }
-          return blocks
-        },
+        // The card draws the payload as a Markdown table rather than pasting JSON:
+        // the conversation renders GFM tables, so the run's actual output is
+        // readable instead of being the hardest thing on screen to parse.
+        render: (_args, value) => [{
+          type: 'text',
+          text: [
+            `${value.status}: ${value.completedRows}/${value.totalRows} completed, ${value.failedRows} failed.`,
+            renderArtifacts(value.artifacts),
+          ].join('\n\n'),
+        }],
       },
       async execute(args, exec) {
         const result = await service.getRunResults(asString(args.run_id, 'run_id'), exec.signal)

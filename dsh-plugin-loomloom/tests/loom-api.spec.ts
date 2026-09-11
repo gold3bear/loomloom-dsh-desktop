@@ -1,10 +1,74 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createLoomTokenResolver } from '../src/credentials.js'
-import { LoomApi, LoomApiError, resolveLoomConfig } from '../src/loom-api.js'
+import {
+  envStorefrontListingIds,
+  LoomApi,
+  LoomApiError,
+  normalizeStorefrontListingIds,
+  resolveLoomConfig,
+  STOREFRONT_IDS_ENV,
+} from '../src/loom-api.js'
+
+// Storefront assertions pass an explicit environment so an ambient override in
+// the developer's shell cannot change what they mean.
+const NO_ENV = {}
 
 test('rejects non-HTTPS endpoint configuration', () => {
   assert.throws(() => resolveLoomConfig({ baseUrl: 'http://127.0.0.1:8090' }))
+})
+
+test('an absent storefront allow-list means no storefront, never the full market', () => {
+  assert.deepEqual(resolveLoomConfig({}, NO_ENV).storefrontListingIds, [])
+  assert.deepEqual(resolveLoomConfig({ storefrontListingIds: [] }, NO_ENV).storefrontListingIds, [])
+})
+
+test('storefront ids keep authoring order and drop repeats', () => {
+  assert.deepEqual(
+    resolveLoomConfig({ storefrontListingIds: ['listing-b', 'listing-a', 'listing-b'] }, NO_ENV).storefrontListingIds,
+    ['listing-b', 'listing-a'],
+  )
+})
+
+test('storefront ids are trimmed before they can reach a route path', () => {
+  assert.deepEqual(normalizeStorefrontListingIds(['  listing-a  ']), ['listing-a'])
+})
+
+test('a malformed storefront id fails at composition time instead of at first render', () => {
+  for (const bad of ['', '   ', '../../credential', 'a/b', 'x'.repeat(201)]) {
+    assert.throws(() => resolveLoomConfig({ storefrontListingIds: [bad] }, NO_ENV), /storefrontListingIds/u)
+  }
+  assert.throws(() => normalizeStorefrontListingIds('listing-a' as never), /must be an array/u)
+})
+
+test('the environment override repoints the storefront without rebuilding', () => {
+  const env = { [STOREFRONT_IDS_ENV]: 'listing-a, listing-b' }
+  assert.deepEqual(
+    resolveLoomConfig({ storefrontListingIds: ['pinned'] }, env).storefrontListingIds,
+    ['listing-a', 'listing-b'],
+  )
+  assert.deepEqual(resolveLoomConfig({}, env).storefrontListingIds, ['listing-a', 'listing-b'])
+})
+
+test('a trailing comma or stray spaces in the override are not an error', () => {
+  assert.deepEqual(envStorefrontListingIds({ [STOREFRONT_IDS_ENV]: ' a ,, b ,' }), ['a', 'b'])
+})
+
+test('an unset or blank override keeps the build pinned instead of blanking the storefront', () => {
+  assert.equal(envStorefrontListingIds(NO_ENV), undefined)
+  assert.equal(envStorefrontListingIds({ [STOREFRONT_IDS_ENV]: '' }), undefined)
+  assert.equal(envStorefrontListingIds({ [STOREFRONT_IDS_ENV]: ' , , ' }), undefined)
+  assert.deepEqual(
+    resolveLoomConfig({ storefrontListingIds: ['pinned'] }, { [STOREFRONT_IDS_ENV]: '   ' }).storefrontListingIds,
+    ['pinned'],
+  )
+})
+
+test('a malformed id in the override fails just as loudly as one in the config', () => {
+  assert.throws(
+    () => resolveLoomConfig({}, { [STOREFRONT_IDS_ENV]: 'listing-a,../../credential' }),
+    /storefrontListingIds/u,
+  )
 })
 
 test('uses a credential reference without exposing its value in configuration', () => {

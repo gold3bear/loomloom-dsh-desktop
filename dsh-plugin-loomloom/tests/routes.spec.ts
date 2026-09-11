@@ -4,7 +4,10 @@ import type { AddressInfo } from 'node:net'
 import test from 'node:test'
 import type { Context } from '@deepseek-ai/cordis'
 import { registerLoomRoutes } from '../src/routes.js'
+import { LoomApiError } from '../src/loom-api.js'
 import type { LoomBrowserLoginService } from '../src/browser-login.js'
+import type { StorefrontCache } from '../src/storefront-cache.js'
+import type { StorefrontSource } from '../src/storefront.js'
 
 type Handler = (req: IncomingMessage, res: ServerResponse) => Promise<void>
 
@@ -22,6 +25,8 @@ async function startServer(options: {
   readonly browserLogin?: Pick<LoomBrowserLoginService, 'start' | 'status' | 'cancel'>
   readonly bootstrap?: () => Promise<unknown>
   readonly account?: () => Promise<unknown>
+  readonly storefront?: StorefrontCache
+  readonly storefrontSource?: StorefrontSource
 } = {}): Promise<TestServer> {
   const routes = new Map<string, Handler>()
   const calls: { path: string, init?: RequestInit }[] = []
@@ -64,7 +69,10 @@ async function startServer(options: {
   options.browserLogin as LoomBrowserLoginService | undefined,
   options.clearCredential,
   options.bootstrap as (() => Promise<never>) | undefined,
-  options.account as (() => Promise<never>) | undefined)
+  options.account as (() => Promise<never>) | undefined,
+  options.storefront === undefined
+    ? {}
+    : { storefront: options.storefront, ...(options.storefrontSource === undefined ? {} : { storefrontSource: options.storefrontSource }) })
   return {
     port,
     calls,
@@ -255,6 +263,19 @@ test('credential route returns presence only and turns backend failures into a g
   } finally { await server.close() }
 })
 
+test('credential presence is answered locally so the market list never waits on readiness probes', async () => {
+  // The market page gates on this route precisely because it is a local read:
+  // the verified `/bootstrap` route fans out to the Loom API and the Router
+  // model catalog, which must stay off the list's critical path.
+  const server = await startServer({ credentialStatus: async () => ({ configured: true, source: 'reference' }) })
+  try {
+    const result = await read(server, '/api/loomloom/credentials', { host: `127.0.0.1:${server.port}` })
+    assert.equal(result.status, 200)
+    assert.deepEqual(result.body, { configured: true, source: 'reference' })
+    assert.deepEqual(server.calls, [])
+  } finally { await server.close() }
+})
+
 test('logout route is loopback-only and returns no secret material', async () => {
   let cleared = 0
   const server = await startServer({ clearCredential: async () => { cleared += 1 } })
@@ -356,6 +377,87 @@ test('market quote and execute routes enforce bounded rows and explicit confirma
   } finally {
     await server.close()
   }
+})
+
+test('the storefront route serves anonymous browsers and never reads a credential', async () => {
+  const snapshot = {
+    entries: [{
+      id: 'listing-1',
+      name: '视觉演示生成器',
+      description: '一句话主题 → 可编辑 HTML 演示文稿。',
+      available: true,
+      version: 'v1',
+      updatedAt: '2026-09-10T03:20:53Z',
+      inputSchemaSnapshot: '{"fields":[]}',
+    }],
+    unavailable: ['gone'],
+    fetchedAt: '2026-09-10T04:00:00Z',
+    stale: false,
+  }
+  const forces: boolean[] = []
+  const storefront = {
+    async read(force = false) { forces.push(force); return snapshot },
+  } as StorefrontCache
+  let credentialReads = 0
+  const server = await startServer({
+    storefront,
+    credentialStatus: async () => { credentialReads += 1; return { configured: false } },
+  })
+  try {
+    const result = await read(server, '/api/loomloom/storefront', { host: `127.0.0.1:${server.port}` })
+    assert.equal(result.status, 200)
+    assert.deepEqual(result.body, { ...snapshot, source: 'none' })
+    assert.equal(credentialReads, 0)
+    assert.deepEqual(server.calls, [])
+    assert.deepEqual(forces, [false])
+    assert.equal(result.headers['cache-control'], 'no-store')
+  } finally { await server.close() }
+})
+
+test('the storefront route reports which source is live so a missing creator key is visible', async () => {
+  const storefront = {
+    async read() { return { configured: false, entries: [], unavailable: [], fetchedAt: '2026-09-10T04:00:00Z', stale: false } },
+  } as StorefrontCache
+  const server = await startServer({ storefront, storefrontSource: 'creator-key-missing' })
+  try {
+    const result = await read(server, '/api/loomloom/storefront', { host: `127.0.0.1:${server.port}` })
+    assert.equal(result.status, 200)
+    assert.equal((result.body as { source?: string }).source, 'creator-key-missing')
+  } finally { await server.close() }
+})
+
+test('the storefront refresh control asks the cache to bypass its lifetime', async () => {
+  const forces: boolean[] = []
+  const storefront = {
+    async read(force = false) {
+      forces.push(force)
+      return { entries: [], unavailable: [], fetchedAt: '2026-09-10T04:00:00Z', stale: false }
+    },
+  } as StorefrontCache
+  const server = await startServer({ storefront })
+  try {
+    const result = await read(server, '/api/loomloom/storefront?refresh=1', { host: `127.0.0.1:${server.port}` })
+    assert.equal(result.status, 200)
+    assert.deepEqual(forces, [true])
+  } finally { await server.close() }
+})
+
+test('the storefront route is loopback-only and reports an unwired storefront', async () => {
+  const storefront = {
+    async read() { return { entries: [], unavailable: [], fetchedAt: '2026-09-10T04:00:00Z', stale: false } },
+  } as StorefrontCache
+  const server = await startServer({ storefront })
+  try {
+    const rejected = await read(server, '/api/loomloom/storefront', { host: `evil.example:${server.port}` })
+    assert.equal(rejected.status, 403)
+  } finally { await server.close() }
+
+  const bare = await startServer()
+  try {
+    const missing = await read(bare, '/api/loomloom/storefront', { host: `127.0.0.1:${bare.port}` })
+    assert.equal(missing.status, 503)
+    assert.deepEqual(missing.body, { error: 'loomloom storefront is unavailable' })
+  } finally { await bare.close() }
 })
 
 test('balance, creator and template read routes forward to the matching upstream endpoints', async () => {

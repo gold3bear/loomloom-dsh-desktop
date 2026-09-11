@@ -3,7 +3,7 @@ import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots
 import {
   type LoomAccount,
   readAccount,
-  readBootstrap,
+  readCredentialStatus,
   logout,
 } from './api.js'
 import { LoomloomConnectFlow } from './LoomloomConnectFlow.js'
@@ -27,9 +27,14 @@ export function LoomloomIdentityAction({ wide, t }: LoomloomIdentityActionProps)
   const refresh = async (): Promise<void> => {
     setLoading(true)
     try {
-      const bootstrap = await readBootstrap()
-      setConfigured(bootstrap.credential.configured)
-      if (bootstrap.credential.configured) {
+      // This footer control is mounted for the whole application lifetime and
+      // only ever needs credential *presence*. Reading the verified bootstrap
+      // here would spend two upstream round trips (a Loom runs query plus the
+      // full Router model catalog) on every application start just to decide
+      // which avatar to draw.
+      const status = await readCredentialStatus()
+      setConfigured(status.configured)
+      if (status.configured) {
         try {
           setAccount(await readAccount())
           setError(undefined)

@@ -120,7 +120,8 @@ type LoomBootstrap = Readonly<{
 
 - 未配置只返回 `configured:false` 和其他字段 `unknown`，返回 `200`，不是 UI 错误。
 - 已配置时可有界验证状态；网络不可用则返回 `unavailable`，但不删除凭据。
-- Market、runs 和 SkillBot 请求只在 `credential.configured === true` 后发起；`401` 转为可操作的“重新连接胜算云”状态，而非列表加载错误。
+- 店面浏览（`GET /api/loomloom/storefront`）**不需要**登录：它只读取公开 Market 数据，`GET /marketListings/{id}` 本身接受匿名请求。店面页因此不得以 `credential.configured` 作为渲染前提，也不得在首屏等待 `/bootstrap` 或 `/credentials`。
+- runs、报价与执行仍只在 `credential.configured === true` 后发起；`401` 转为可操作的“重新连接胜算云”状态，而非列表加载错误。凭据状态在用户点击“立即调用”时才读取。
 
 ### 5.2 授权会话
 
