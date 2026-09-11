@@ -11,6 +11,7 @@ import { LoomloomOnboarding } from './LoomloomConnectFlow.js'
 import { LoomloomSettingsTab } from './LoomloomSettingsTab.js'
 import { LoomloomIdentityAction } from './LoomloomIdentityAction.js'
 import { LoomloomMarketPage } from './LoomloomMarketPage.js'
+import { LoomloomRunResultCard } from './LoomloomRunResultCard.js'
 import { LoomloomSidebarNavigation } from './LoomloomSidebarNavigation.js'
 import {
   installLoomloomSessionNavigationBridge,
@@ -131,6 +132,16 @@ export function apply(ctx: ClientContext): void {
       locale: NS,
     }, MainSurface)
   })
+  // Both tools carry the same projected payload, so one card owns both rows. An
+  // unreadable payload (an older session, or a nested transport) falls back to
+  // the model-facing text inside the card itself.
+  for (const key of ['loomloom_get_run_results', 'loomloom_execute_skillbot'] as const) {
+    ctx.slots.inject('tool.call.toolview', () => ctx.slots.register({
+      name: 'tool.call.toolview',
+      key,
+      locale: NS,
+    }, LoomloomRunResultCard))
+  }
   ctx.slots.inject('settings.onboarding', () => {
     const Onboarding = (props: Parameters<typeof LoomloomOnboarding>[0]) =>
       createElement(LoomloomOnboarding, {

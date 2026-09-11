@@ -9,18 +9,12 @@
  * block: no new block type, no upstream change, and a plain fallback when the
  * payload is not tabular.
  *
- * Everything here is a pure string transform so it can be tested without a Host,
- * a client, or a network.
+ * The shape decision itself lives in `payload-view.ts`, shared with the client's
+ * result card; this module only turns that view into Markdown.
  */
 
-/** Rows kept in a table before it is summarised. */
-const DEFAULT_MAX_ROWS = 20
-/** Columns kept before the remainder is reported. */
-const DEFAULT_MAX_COLUMNS = 8
-/** Longest cell rendered before it is elided. */
-const MAX_CELL_CHARS = 120
-/** Nesting levels a single object is expanded into dot paths. */
-const MAX_DEPTH = 2
+import { describePayload, emptyMarker, type PayloadOptions, type PayloadTable } from './payload-view.js'
+
 /**
  * Character budget for one artifact payload.
  *
@@ -36,14 +30,7 @@ const TRUNCATION_MARKER = '\n…[truncated]'
 /** Number of artifacts whose payload is drawn before the rest are only listed. */
 const DEFAULT_MAX_ARTIFACTS = 3
 
-export interface PresentationOptions {
-  readonly maxRows?: number
-  readonly maxColumns?: number
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
+export type PresentationOptions = PayloadOptions
 
 /**
  * Parses an artifact's inline text when it is a JSON object or array.
@@ -63,36 +50,8 @@ export function parseInlineJson(text: string): unknown | undefined {
   }
 }
 
-/** Collapses whitespace, escapes the table delimiter, and elides long values. */
-function cell(value: unknown): string {
-  const text = summarize(value).replace(/\s+/gu, ' ').trim()
-  const escaped = text.replace(/\|/gu, '\\|')
-  return escaped.length > MAX_CELL_CHARS ? `${escaped.slice(0, MAX_CELL_CHARS - 1)}…` : escaped
-}
-
-/** One value as a short string; containers become a shape hint rather than exploding. */
-function summarize(value: unknown): string {
-  if (value === null) return 'null'
-  if (value === undefined) return ''
-  if (Array.isArray(value)) return value.length === 0 ? '[]' : `[${String(value.length)} items]`
-  if (isRecord(value)) return Object.keys(value).length === 0 ? '{}' : '{…}'
-  if (typeof value === 'object') return String(value)
-  return String(value)
-}
-
-interface Row {
-  readonly [key: string]: unknown
-}
-
-/** Column order: first appearance across rows, so the payload's own order wins. */
-function columnsOf(rows: readonly Row[], maxColumns: number): readonly string[] {
-  const columns: string[] = []
-  for (const row of rows) {
-    for (const key of Object.keys(row)) {
-      if (!columns.includes(key)) columns.push(key)
-    }
-  }
-  return columns.slice(0, maxColumns)
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function table(header: readonly string[], body: readonly (readonly string[])[]): string {
@@ -102,43 +61,14 @@ function table(header: readonly string[], body: readonly (readonly string[])[]):
   return [head, rule, ...lines].join('\n')
 }
 
-/** Flattens one object into dot-path leaves, expanding at most {@link MAX_DEPTH} levels. */
-function leaves(value: unknown, prefix: string, depth: number, out: [string, unknown][]): void {
-  if (depth >= MAX_DEPTH || !isRecord(value)) {
-    out.push([prefix, value])
-    return
-  }
-  const entries = Object.entries(value)
-  if (entries.length === 0) {
-    out.push([prefix, value])
-    return
-  }
-  for (const [key, child] of entries) leaves(child, prefix === '' ? key : `${prefix}.${key}`, depth + 1, out)
-}
-
-function objectTable(value: Record<string, unknown>): string {
-  const pairs: [string, unknown][] = []
-  for (const [key, child] of Object.entries(value)) leaves(child, key, 1, pairs)
-  if (pairs.length === 0) return '_(empty object)_'
-  return table(['field', 'value'], pairs.map(([key, child]) => [cell(key), cell(child)]))
-}
-
-function rowsTable(rows: readonly Row[], options: PresentationOptions): string {
-  const maxRows = options.maxRows ?? DEFAULT_MAX_ROWS
-  const maxColumns = options.maxColumns ?? DEFAULT_MAX_COLUMNS
-  const columns = columnsOf(rows, maxColumns)
-  if (columns.length === 0) return '_(no fields)_'
-  const shown = rows.slice(0, maxRows)
-  const rendered = table(columns.map(column => cell(column)), shown.map(row => columns.map(column => cell(row[column]))))
+/** One table view plus the elision notes a reader must see. */
+function tableMarkdown(view: PayloadTable): string {
+  const rendered = table(view.columns, view.rows)
   const notes: string[] = []
-  if (rows.length > shown.length) notes.push(`showing ${String(shown.length)} of ${String(rows.length)} rows`)
-  const totalColumns = new Set(rows.flatMap(row => Object.keys(row))).size
-  if (totalColumns > columns.length) notes.push(`${String(totalColumns - columns.length)} more column(s) omitted`)
+  const shown = view.rows.length
+  if (view.totalRows > shown) notes.push(`showing ${String(shown)} of ${String(view.totalRows)} rows`)
+  if (view.omittedColumns > 0) notes.push(`${String(view.omittedColumns)} more column(s) omitted`)
   return [rendered, ...notes.map(note => `_${note}_`)].join('\n\n')
-}
-
-function scalarTable(values: readonly unknown[]): string {
-  return table(['value'], values.map(value => [cell(value)]))
 }
 
 /**
@@ -150,15 +80,14 @@ function scalarTable(values: readonly unknown[]): string {
  * special-case a payload it did not expect.
  */
 export function jsonToMarkdown(value: unknown, options: PresentationOptions = {}): string {
-  if (Array.isArray(value)) {
-    if (value.length === 0) return '_(empty list)_'
-    return value.every(isRecord)
-      ? rowsTable(value, options)
-      : scalarTable(value)
+  const view = describePayload(value, options)
+  switch (view.kind) {
+    case 'table': return tableMarkdown(view)
+    case 'fields': return table(['field', 'value'], view.rows)
+    case 'scalars': return table(['value'], view.rows.map(row => [row]))
+    case 'text': return `\`\`\`\n${view.text}\n\`\`\``
+    case 'empty': return emptyMarker(view.reason)
   }
-  if (isRecord(value)) return objectTable(value)
-  if (value === null || value === undefined) return '_(no result)_'
-  return `\`\`\`\n${String(value)}\n\`\`\``
 }
 
 /** Bounds one artifact payload, marking the cut so a truncated result is never read as complete. */

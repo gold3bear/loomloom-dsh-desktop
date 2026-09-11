@@ -3,6 +3,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-user-approval'
 import { LoomApiError } from './loom-api.js'
 import { renderArtifacts } from './result-presentation.js'
+import { runResultMeta } from './run-result-meta.js'
 import { LoomSkillbotService, type DraftToolValue, type ExecutionDraft, type MarketQuote, type SkillbotSummary, type SkillbotToolValue } from './skillbots.js'
 
 const SKILLBOT_SCHEMA = {
@@ -259,6 +260,9 @@ export function registerLoomTools(ctx: Context, service: LoomSkillbotService): (
           }
           return blocks
         },
+        // The conversation's result card renders from this payload; the Markdown
+        // above stays the model-facing text.
+        presentationMeta: (_args, value) => runResultMeta(value),
       },
       async execute(args, exec) {
         const agent = requireAgent(exec.agent)
@@ -336,6 +340,9 @@ export function registerLoomTools(ctx: Context, service: LoomSkillbotService): (
             renderArtifacts(value.artifacts),
           ].join('\n\n'),
         }],
+        // The conversation's result card renders from this payload; the Markdown
+        // above stays the model-facing text.
+        presentationMeta: (_args, value) => runResultMeta(value),
       },
       async execute(args, exec) {
         const result = await service.getRunResults(asString(args.run_id, 'run_id'), exec.signal)

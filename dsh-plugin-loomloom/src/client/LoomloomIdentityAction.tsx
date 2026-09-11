@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import { Modal } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   type LoomAccount,
   readAccount,
@@ -81,46 +82,45 @@ export function LoomloomIdentityAction({ wide, t }: LoomloomIdentityActionProps)
       </button>
 
       {open && (
-        <div className="loomloomIdentityOverlay" role="presentation" onMouseDown={event => {
-          if (event.target === event.currentTarget) setOpen(false)
-        }}>
-          <div className="loomloomIdentityDialog" role="dialog" aria-modal="true" aria-labelledby="loomloom-identity-title">
-            <div className="loomloomIdentityDialogHeader">
-              <h2 id="loomloom-identity-title">{configured ? label : t('signIn')}</h2>
-              <button type="button" className="loomloomIdentityClose" aria-label={t('close')} onClick={() => setOpen(false)}>×</button>
-            </div>
-            {!configured
-              ? <LoomloomConnectFlow
-                t={t}
-                onConnected={() => { setOpen(false); void refresh() }}
-                onLater={() => setOpen(false)}
-              />
-              : <div className="loomloomIdentityDetails">
-                <div className="loomloomIdentityProfile">
-                  <span className="loomloomIdentityAvatar loomloomIdentityAvatarLarge" aria-hidden="true">
-                    {account?.photoUrl ? <img src={account.photoUrl} alt="" /> : initials(account ?? { configured: true })}
-                  </span>
-                  <div>
-                    <strong>{account?.displayName ?? t('account')}</strong>
-                    {account?.email && <span>{account.email}</span>}
-                  </div>
+        <Modal
+          open
+          onClose={() => { setOpen(false) }}
+          title={configured ? label : t('signIn')}
+          closeLabel={t('close')}
+          className="loomloomDialogNarrow"
+          contentClassName="loomloomDialogScroll"
+        >
+          {!configured
+            ? <LoomloomConnectFlow
+              t={t}
+              onConnected={() => { setOpen(false); void refresh() }}
+              onLater={() => setOpen(false)}
+            />
+            : <div className="loomloomIdentityDetails">
+              <div className="loomloomIdentityProfile">
+                <span className="loomloomIdentityAvatar loomloomIdentityAvatarLarge" aria-hidden="true">
+                  {account?.photoUrl ? <img src={account.photoUrl} alt="" /> : initials(account ?? { configured: true })}
+                </span>
+                <div>
+                  <strong>{account?.displayName ?? t('account')}</strong>
+                  {account?.email && <span>{account.email}</span>}
                 </div>
-                {error && <p className="loomloomError" role="status">{error}</p>}
-                {account && <dl className="loomloomIdentityFacts">
-                  {account?.uid && <><dt>{t('accountId')}</dt><dd>{account.uid}</dd></>}
-                  {account?.balance && <><dt>{t('balance')}</dt><dd>{account.balance}</dd></>}
-                  {account?.isCreator !== undefined && <><dt>{t('accountRole')}</dt><dd>{account.isCreator ? t('creator') : t('user')}</dd></>}
-                </dl>}
-                <button className="loomloomButton" type="button" onClick={() => {
-                  void logout().then(() => { setConfigured(false); setAccount(undefined); setOpen(false) }).catch(cause => {
-                    setError(cause instanceof Error ? cause.message : t('error'))
-                  })
-                }}>
-                  {t('signOut')}
-                </button>
-              </div>}
-          </div>
-        </div>
+              </div>
+              {error && <p className="loomloomAlert" data-tone="danger" role="status">{error}</p>}
+              {account && <dl className="loomloomIdentityFacts">
+                {account?.uid && <><dt>{t('accountId')}</dt><dd>{account.uid}</dd></>}
+                {account?.balance && <><dt>{t('balance')}</dt><dd>{account.balance}</dd></>}
+                {account?.isCreator !== undefined && <><dt>{t('accountRole')}</dt><dd>{account.isCreator ? t('creator') : t('user')}</dd></>}
+              </dl>}
+              <button className="loomloomButton" type="button" onClick={() => {
+                void logout().then(() => { setConfigured(false); setAccount(undefined); setOpen(false) }).catch(cause => {
+                  setError(cause instanceof Error ? cause.message : t('error'))
+                })
+              }}>
+                {t('signOut')}
+              </button>
+            </div>}
+        </Modal>
       )}
     </>
   )

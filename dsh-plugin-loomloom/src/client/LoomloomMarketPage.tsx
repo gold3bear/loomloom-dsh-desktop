@@ -1,5 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
+import {
+  IconCheckOutline16,
+  IconListPenOutline16,
+  IconPaperclipOutline16,
+  IconPlayOutline16,
+  IconRefreshOutline16,
+  IconSearchOutline16,
+  IconWarningOutline16,
+  Input,
+  Modal,
+} from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   readCredentialStatus,
   uploadInputAsset,
@@ -7,6 +19,7 @@ import {
   type LoomStorefrontEntry,
 } from './api.js'
 import { fieldControl, initialValues, missingRequired, payloadRow } from './field-input.js'
+import { feeText, filterEntries, monogram, updatedText } from './market-format.js'
 import { LoomloomConnectFlow } from './LoomloomConnectFlow.js'
 import { defaultMarketSource, loadMarket, type MarketLoad } from './market-loader.js'
 import { setLoomloomMarketActive } from './market-navigation.js'
@@ -53,18 +66,22 @@ function fileToBase64(file: File): Promise<string> {
   })
 }
 
+/** Card count drawn while the storefront is still loading. */
+const SKELETON_CARDS = [0, 1, 2] as const
+
 /**
  * The cloud SkillBot market.
  *
- * It presents one creator's storefront and hands a chosen SkillBot to the
- * conversation: this surface never quotes, executes or bills anything itself. A
- * click becomes one user message and the agent drives the Loomloom tools from
- * there, which keeps a single path to a paid run and a single place its result is
- * reported.
+ * It presents one creator's storefront as a card grid and hands a chosen
+ * SkillBot to the conversation: this surface never quotes, executes or bills
+ * anything itself. A click becomes one user message and the agent drives the
+ * Loomloom tools from there, which keeps a single path to a paid run and a
+ * single place its result is reported.
  */
 export function LoomloomMarketPage({ t, sessions, workspaceOf }: LoomloomMarketPageProps) {
   const [state, setState] = useState<MarketLoad | undefined>()
   const [busy, setBusy] = useState(true)
+  const [query, setQuery] = useState('')
   const [preview, setPreview] = useState<LoomStorefrontEntry | undefined>()
   const [values, setValues] = useState<Record<string, unknown>>({})
   const [assetNames, setAssetNames] = useState<Record<string, string>>({})
@@ -163,7 +180,7 @@ export function LoomloomMarketPage({ t, sessions, workspaceOf }: LoomloomMarketP
 
   const onDeclined = useCallback((): void => {
     // Declining is a choice, not a failure: drop the deferred call and return to
-    // the list, where the same row starts it again.
+    // the list, where the same card starts it again.
     deferred.current = undefined
     setAuthorizing(false)
   }, [])
@@ -175,8 +192,22 @@ export function LoomloomMarketPage({ t, sessions, workspaceOf }: LoomloomMarketP
     setFormError(undefined)
   }
 
+  const closePreview = (): void => {
+    setPreview(undefined)
+    setFormError(undefined)
+  }
+
   const updateField = (field: LoomField, value: unknown): void => {
     setValues(previous => ({ ...previous, [field.key]: value }))
+  }
+
+  const clearUpload = (field: LoomField): void => {
+    setAssetNames(previous => {
+      const next = { ...previous }
+      delete next[field.key]
+      return next
+    })
+    updateField(field, '')
   }
 
   const upload = async (field: LoomField, file: File): Promise<void> => {
@@ -203,55 +234,70 @@ export function LoomloomMarketPage({ t, sessions, workspaceOf }: LoomloomMarketP
   }
 
   const storefront = state?.ok === true ? state.storefront : undefined
+  const entries = storefront?.entries ?? []
+  const visible = filterEntries(entries, query)
 
-  const fieldInput = (field: LoomField) => {
+  const fieldInput = (field: LoomField): ReactNode => {
     const control = fieldControl(field)
     const value = values[field.key]
     if (control === 'file') {
       const chosen = assetNames[field.key]
+      const uploading = uploadingKey === field.key
+      if (chosen !== undefined && !uploading) {
+        return (
+          <div className="loomloomDropzone" data-filled={true}>
+            <div className="loomloomDropzoneFilled">
+              <span className="loomloomFileChip">
+                <IconCheckOutline16 size={12} />
+                <span>{chosen}</span>
+              </span>
+              <button className="loomloomButton" type="button" data-size="sm" onClick={() => { clearUpload(field) }}>
+                {t('clearFile')}
+              </button>
+            </div>
+          </div>
+        )
+      }
+      const accepted = field.acceptedMimeTypes ?? []
       return (
-        <div className="loomloomFileRow">
+        <label className="loomloomDropzone">
+          <IconPaperclipOutline16 size={20} />
+          <strong>{uploading ? t('uploading') : t('dropzoneTitle')}</strong>
+          {accepted.length > 0 && <small>{t('dropzoneHint', { types: accepted.join(' / ') })}</small>}
           <input
+            className="loomloomDropzoneInput"
             type="file"
-            accept={field.acceptedMimeTypes?.join(',')}
-            disabled={uploadingKey === field.key}
+            accept={accepted.join(',')}
+            disabled={uploading}
             onChange={event => {
               const file = event.target.files?.[0]
               if (file !== undefined) void upload(field, file)
             }}
           />
-          {uploadingKey === field.key && <small>{t('uploading')}</small>}
-          {chosen !== undefined && uploadingKey !== field.key && (
-            <>
-              <small>{chosen}</small>
-              <button className="loomloomButton" type="button" onClick={() => {
-                setAssetNames(previous => {
-                  const next = { ...previous }
-                  delete next[field.key]
-                  return next
-                })
-                updateField(field, '')
-              }}>{t('clearFile')}</button>
-            </>
-          )}
-        </div>
+        </label>
       )
     }
     if (control === 'select') {
       return (
-        <select value={String(value ?? '')} onChange={event => { updateField(field, event.target.value) }}>
+        <select className="loomloomSelect" value={String(value ?? '')} onChange={event => { updateField(field, event.target.value) }}>
           <option value="">{t('selectPlaceholder')}</option>
           {(field.enumValues ?? []).map(option => <option value={option} key={option}>{option}</option>)}
         </select>
       )
     }
     if (control === 'checkbox') {
-      return <input type="checkbox" checked={value === true} onChange={event => { updateField(field, event.target.checked) }} />
+      return (
+        <span className="loomloomCheckboxRow">
+          <input type="checkbox" checked={value === true} onChange={event => { updateField(field, event.target.checked) }} />
+          <span>{field.placeholder ?? field.label}</span>
+        </span>
+      )
     }
     if (control === 'textarea') {
       return (
         <textarea
-          rows={3}
+          className="loomloomTextarea"
+          rows={4}
           value={String(value ?? '')}
           placeholder={field.placeholder ?? field.description}
           onChange={event => { updateField(field, event.target.value) }}
@@ -260,6 +306,7 @@ export function LoomloomMarketPage({ t, sessions, workspaceOf }: LoomloomMarketP
     }
     return (
       <input
+        className="loomloomInput"
         type={control === 'number' ? 'number' : 'text'}
         value={String(value ?? '')}
         placeholder={field.placeholder ?? field.description}
@@ -271,138 +318,230 @@ export function LoomloomMarketPage({ t, sessions, workspaceOf }: LoomloomMarketP
     )
   }
 
+  const notice = (tone: 'info' | 'warning' | 'danger', body: ReactNode, key: string) => (
+    <div className="loomloomAlert" data-tone={tone} role={tone === 'danger' ? 'alert' : 'status'} key={key}>
+      {tone !== 'info' && <IconWarningOutline16 />}
+      <div>{body}</div>
+    </div>
+  )
+
   return (
     <div className="loomloomMarketPage">
       <section className="loomloomMarketPanel" role="region" aria-labelledby="loomloom-market-title">
         <header className="loomloomMarketHeader">
-          <div>
-            <p className="loomloomMarketEyebrow">{t('marketEyebrow')}</p>
-            <h2 id="loomloom-market-title">{t('marketTitle')}</h2>
+          <div className="loomloomMarketHeaderInner">
+            <div className="loomloomMarketHeaderMain">
+              <p className="loomloomMarketEyebrow">{t('marketEyebrow')}</p>
+              <h2 id="loomloom-market-title">{t('marketTitle')}</h2>
+              <p className="loomloomMarketSubtitle">{t('marketSubtitle')}</p>
+            </div>
+            <div className="loomloomMarketToolbar">
+              <Input
+                className="loomloomMarketSearch"
+                icon={<IconSearchOutline16 />}
+                type="search"
+                value={query}
+                placeholder={t('marketSearchPlaceholder')}
+                aria-label={t('marketSearchLabel')}
+                onChange={event => { setQuery(event.target.value) }}
+              />
+              <button
+                className="loomloomButton"
+                type="button"
+                onClick={() => void load(true)}
+                disabled={busy}
+              >
+                <IconRefreshOutline16 />
+                {busy ? t('loading') : t('refresh')}
+              </button>
+            </div>
           </div>
         </header>
 
         <div className="loomloomMarketBody">
-          {state?.ok === false && <p className="loomloomError" role="alert">{state.message}</p>}
-          {formError !== undefined && preview === undefined && !authorizing && (
-            <p className="loomloomError" role="alert">{formError}</p>
-          )}
-          {storefront?.error !== undefined && (
-            <p className="loomloomMarketNotice" role="status">
-              {t('storefrontRefreshFailed', { message: storefront.error })}
-            </p>
-          )}
-          {storefront !== undefined && storefront.unavailable.length > 0 && (
-            <p className="loomloomMarketNotice" role="status">
-              {t('storefrontUnavailable', { count: storefront.unavailable.length })}
-            </p>
-          )}
+          {state?.ok === false && notice('danger', <p>{state.message}</p>, 'load')}
+          {formError !== undefined && preview === undefined && !authorizing && notice('danger', <p>{formError}</p>, 'form')}
+          {storefront?.error !== undefined
+            && notice('warning', <p>{t('storefrontRefreshFailed', { message: storefront.error })}</p>, 'stale')}
+          {storefront !== undefined && storefront.unavailable.length > 0
+            && notice('warning', <p>{t('storefrontUnavailable', { count: storefront.unavailable.length })}</p>, 'unavailable')}
 
           {storefront !== undefined && !storefront.configured
-            ? <div className="loomloomMarketNotice" role="status">
-              <strong>
-                {storefront.source === 'creator-key-missing'
-                  ? t('storefrontCreatorKeyMissing')
-                  : t('storefrontUnconfigured')}
-              </strong>
-              {storefront.source !== 'creator-key-missing' && <p>{t('storefrontUnconfiguredHint')}</p>}
-            </div>
-            : <div className="loomloomMarketList">
-              <div className="loomloomMarketSectionHead">
-                <h3>{t('marketSkillbots')}</h3>
-                <button className="loomloomButton" type="button" onClick={() => void load(true)} disabled={busy}>
-                  {busy ? t('loading') : t('refresh')}
-                </button>
-              </div>
-              {busy && storefront === undefined && <p className="loomloomFlowDescription" role="status">{t('loading')}</p>}
-              {(storefront?.entries ?? []).map(entry => (
-                <div className="loomloomMarketItem" key={entry.id} role="group">
-                  <button
-                    className="loomloomMarketItemOpen"
-                    type="button"
-                    disabled={!entry.available || starting}
-                    onClick={() => void invoke(entry)}
-                  >
-                    <span className="loomloomMarketItemMain">
-                      <strong>{entry.name}</strong>
-                      {entry.description && <small>{entry.description}</small>}
-                    </span>
-                    <span className="loomloomMarketItemMeta">
-                      {entry.fixedFee ?? t('free')}{entry.currency === undefined ? '' : ` ${entry.currency}`}
-                    </span>
-                  </button>
-                  <button
-                    className="loomloomMarketPreview"
-                    type="button"
-                    aria-label={`${t('previewInputs')}: ${entry.name}`}
-                    onClick={() => { openPreview(entry) }}
-                  >
-                    <span aria-hidden="true">☰</span>
-                  </button>
+            ? notice(
+              'info',
+              <>
+                <strong>
+                  {storefront.source === 'creator-key-missing'
+                    ? t('storefrontCreatorKeyMissing')
+                    : t('storefrontUnconfigured')}
+                </strong>
+                {storefront.source !== 'creator-key-missing' && <p>{t('storefrontUnconfiguredHint')}</p>}
+              </>,
+              'unconfigured',
+            )
+            : <>
+              {busy && storefront === undefined && <>
+                <p className="loomloomMarketSummary" role="status">{t('loading')}</p>
+                <div className="loomloomMarketCards" aria-hidden="true">
+                  {SKELETON_CARDS.map(index => (
+                    <div className="loomloomMarketSkeleton" key={index}><span /><span /><span /></div>
+                  ))}
                 </div>
-              ))}
-              {!busy && storefront !== undefined && storefront.entries.length === 0 && (
-                <p className="loomloomFlowDescription">{t('marketEmpty')}</p>
-              )}
-            </div>}
+              </>}
+
+              {!(busy && storefront === undefined) && <>
+                <p className="loomloomMarketSummary">
+                  <strong>{t('marketSkillbots')}</strong>
+                  <span>{t('marketCount', { count: entries.length })}</span>
+                </p>
+
+                {visible.length === 0
+                  ? <div className="loomloomEmptyBand">
+                    <strong>{query.trim() === '' ? t('marketEmpty') : t('marketSearchEmpty')}</strong>
+                  </div>
+                  : <div className="loomloomMarketCards">
+                    {visible.map(entry => {
+                      const creator = entry.creatorNickname
+                      const updated = updatedText(entry.updatedAt)
+                      return (
+                        <article className="loomloomMarketCard" key={entry.id} aria-label={entry.name}>
+                          <div className="loomloomMarketCardHead">
+                            <span className="loomloomMarketAvatar" aria-hidden="true">{monogram(creator ?? entry.name)}</span>
+                            <span className="loomloomMarketCardTitle">
+                              <strong>{entry.name}</strong>
+                              {creator !== undefined && <span>{t('marketCreator', { name: creator })}</span>}
+                            </span>
+                            <span className="loomloomChip" data-tone={entry.available ? 'success' : 'neutral'}>
+                              {entry.available ? t('available') : t('unavailable')}
+                            </span>
+                          </div>
+
+                          <div className="loomloomMarketChips">
+                            {entry.version !== undefined && <span className="loomloomChip" data-tone="info">{t('versionLabel')} {entry.version}</span>}
+                            <span className="loomloomChip" data-tone="outline">{t('marketInputs', { count: entry.fields.length })}</span>
+                            {updated !== undefined && <span className="loomloomChip" data-tone="quiet">{t('marketUpdated', { date: updated })}</span>}
+                          </div>
+
+                          {entry.description !== '' && <p className="loomloomMarketDesc">{entry.description}</p>}
+
+                          <div className="loomloomMarketCardFoot">
+                            <span className="loomloomMarketFee">
+                              <strong>{feeText(entry, t('free'))}</strong>
+                              <small>{t('fee')}</small>
+                            </span>
+                            <span className="loomloomMarketActions">
+                              <button
+                                className="loomloomButton loomloomButtonPrimary"
+                                type="button"
+                                disabled={!entry.available || starting}
+                                aria-label={`${t('callInChat')}: ${entry.name}`}
+                                onClick={() => void invoke(entry)}
+                              >
+                                <IconPlayOutline16 />
+                                {t('callInChat')}
+                              </button>
+                              <button
+                                className="loomloomButton"
+                                type="button"
+                                aria-label={`${t('previewInputs')}: ${entry.name}`}
+                                onClick={() => { openPreview(entry) }}
+                              >
+                                <IconListPenOutline16 />
+                                {t('previewInputsShort')}
+                              </button>
+                            </span>
+                          </div>
+                        </article>
+                      )
+                    })}
+                  </div>}
+              </>}
+            </>}
         </div>
       </section>
 
       {preview !== undefined && (
-        <div className="loomloomCallOverlay" role="presentation" onMouseDown={event => {
-          if (event.target === event.currentTarget) setPreview(undefined)
-        }}>
-          <div className="loomloomCallDialog" role="dialog" aria-modal="true" aria-labelledby="loomloom-preview-title">
-            <div className="loomloomCallHeader">
-              <h3 id="loomloom-preview-title">{t('previewTitle')} · {preview.name}</h3>
-              <button className="loomloomIdentityClose" type="button" aria-label={t('closeCall')} onClick={() => { setPreview(undefined) }}>×</button>
+        <Modal
+          open
+          onClose={closePreview}
+          title={`${t('previewTitle')} · ${preview.name}`}
+          closeLabel={t('closeCall')}
+          className="loomloomDialog"
+          contentClassName="loomloomDialogScroll"
+          footer={<div className="loomloomDialogFooter">
+            <div className="loomloomFeeBar">
+              <div>
+                <strong>{t('previewFeeBarTitle')}</strong>
+                <small>{t('previewFeeBarNote')}</small>
+              </div>
+              <span className="loomloomFeeBarValue">{feeText(preview, t('free'))}</span>
             </div>
-            {formError !== undefined && <p className="loomloomError" role="alert">{formError}</p>}
-            <dl className="loomloomMarketFacts">
-              {preview.version !== undefined && <><dt>{t('versionLabel')}</dt><dd>{preview.version}</dd></>}
-              {preview.updatedAt !== undefined && (
-                <><dt>{t('updatedAtLabel')}</dt><dd>{new Date(preview.updatedAt).toLocaleString()}</dd></>
-              )}
-              {preview.creatorNickname !== undefined && <><dt>{t('creatorLabel')}</dt><dd>{preview.creatorNickname}</dd></>}
-              <dt>{t('fee')}</dt>
-              <dd>{preview.fixedFee ?? t('free')}{preview.currency === undefined ? '' : ` ${preview.currency}`}</dd>
-            </dl>
-            {preview.description !== '' && <p className="loomloomFlowDescription">{preview.description}</p>}
-            {preview.fields.length === 0
-              ? <p className="loomloomFlowDescription">{t('noSchema')}</p>
-              : <div className="loomloomMarketForm">
-                {preview.fields.map(field => (
-                  <label className="loomloomMarketField" key={field.key}>
-                    <span>{field.label}{field.required ? ' *' : ''}</span>
-                    {fieldInput(field)}
-                    {field.description !== undefined && <small>{field.description}</small>}
-                  </label>
-                ))}
-              </div>}
-            <div className="loomloomFlowActions">
-              <button
-                className="loomloomButton loomloomButtonPrimary"
-                type="button"
-                disabled={!preview.available || starting}
-                onClick={submitPreview}
-              >
-                {starting ? t('preparingCall') : t('callInChat')}
-              </button>
-            </div>
+            <button
+              className="loomloomButton loomloomButtonPrimary loomloomButtonBlock"
+              type="button"
+              disabled={!preview.available || starting}
+              onClick={submitPreview}
+            >
+              <IconPlayOutline16 />
+              {starting ? t('preparingCall') : t('callInChat')}
+            </button>
+          </div>}
+        >
+          <div className="loomloomDialogBody">
+            <p className="loomloomDialogMeta">
+              {preview.creatorNickname !== undefined
+                && <span>{t('marketCreator', { name: preview.creatorNickname })}</span>}
+              {preview.version !== undefined && <span>{t('versionLabel')} {preview.version}</span>}
+              {preview.updatedAt !== undefined && <span>{t('updatedAtLabel')} {new Date(preview.updatedAt).toLocaleString()}</span>}
+              <span>{t('fee')} {feeText(preview, t('free'))}</span>
+            </p>
+
+            {preview.description !== '' && <p className="loomloomDialogText">{preview.description}</p>}
+            {formError !== undefined && notice('danger', <p>{formError}</p>, 'dialog-error')}
+
+            <section className="loomloomDialogSection" aria-label={t('schema')}>
+              <h3>{t('schema')}</h3>
+              {preview.fields.length === 0
+                ? <p className="loomloomDialogText">{t('noSchema')}</p>
+                : <div className="loomloomFieldList">
+                  {preview.fields.map(field => (
+                    <label className="loomloomFieldRow" key={field.key}>
+                      <span className="loomloomFieldLabel">
+                        {field.label}
+                        {field.required && <span className="loomloomFieldRequired" aria-hidden="true">*</span>}
+                      </span>
+                      {fieldInput(field)}
+                      {field.description !== undefined && <small className="loomloomFieldNote">{field.description}</small>}
+                    </label>
+                  ))}
+                </div>}
+            </section>
+
+            <section className="loomloomDialogSection">
+              <h3>{t('previewStepsTitle')}</h3>
+              <ul className="loomloomSteps">
+                <li><IconCheckOutline16 size={12} />{t('previewStepRead')}</li>
+                <li><IconCheckOutline16 size={12} />{t('previewStepQuote')}</li>
+                <li><IconCheckOutline16 size={12} />{t('previewStepApprove')}</li>
+                <li><IconCheckOutline16 size={12} />{t('previewStepResult')}</li>
+              </ul>
+            </section>
           </div>
-        </div>
+        </Modal>
       )}
 
       {authorizing && (
-        <div className="loomloomCallOverlay" role="presentation">
-          <div className="loomloomCallDialog" role="dialog" aria-modal="true" aria-labelledby="loomloom-auth-title">
-            <div className="loomloomCallHeader">
-              <h3 id="loomloom-auth-title">{t('authRequired')}</h3>
-              <button className="loomloomIdentityClose" type="button" aria-label={t('closeCall')} onClick={onDeclined}>×</button>
-            </div>
-            <p className="loomloomFlowDescription">{t('authContinueHint')}</p>
-            <LoomloomConnectFlow t={t} onConnected={onConnected} onLater={onDeclined} />
-          </div>
-        </div>
+        <Modal
+          open
+          onClose={onDeclined}
+          title={t('authRequired')}
+          description={t('authContinueHint')}
+          closeLabel={t('closeCall')}
+          className="loomloomDialog"
+          contentClassName="loomloomDialogScroll"
+        >
+          <LoomloomConnectFlow t={t} onConnected={onConnected} onLater={onDeclined} />
+        </Modal>
       )}
     </div>
   )
