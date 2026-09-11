@@ -951,10 +951,10 @@ describe('published package surface', () => {
     expect(ciWorkflow).toContain('Documentation-only change; product build and tests are not required.')
   })
 
-  it('keeps one fixed brand-blue tray source for generated native assets', () => {
+  it('keeps one fixed ShengSuanYun brand-purple tray source for generated native assets', () => {
     const source = readFileSync(new URL('build/tray-icon.svg', packageRoot), 'utf8')
 
-    expect(source.match(/#4D6BFE/gu)).toHaveLength(1)
+    expect(source.match(/#5742EE/gu)).toHaveLength(2)
     expect(source).not.toMatch(/<style\b|prefers-color-scheme/iu)
     for (const filename of [
       'tray-iconTemplate.png',
@@ -968,12 +968,12 @@ describe('published package surface', () => {
     }
   })
 
-  it('keeps the iOS Default source icon unmodified', () => {
+  it('keeps the ShengSuanYun source icon unmodified', () => {
     const digest = createHash('sha256')
       .update(readFileSync(new URL('build/app-icon.png', packageRoot)))
       .digest('hex')
 
-    expect(digest).toBe('315fbc6e57ff1f34894f21f66fb7f9f26deccf78333c71fad21a6cec64e7de80')
+    expect(digest).toBe('ec01aecb1720da26ff90a8ea4598199f8c3330b22611cb0a96dad17ccd0dac30')
   })
 
   it('generates exact-DPI Windows application and installer icon frames', () => {
@@ -1013,7 +1013,7 @@ describe('published package surface', () => {
       .toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
   })
 
-  it('generates a centered macOS icon with a 100-pixel visual inset', async () => {
+  it('centers the ShengSuanYun artwork inside the macOS icon safe area', async () => {
     const source = await sharp(readFileSync(new URL('build/app-icon.png', packageRoot))).metadata()
     const icon = sharp(readFileSync(new URL('build/app-icon-mac.png', packageRoot)))
     const metadata = await icon.metadata()
@@ -1032,12 +1032,14 @@ describe('published package surface', () => {
       hasAlpha: true,
     }))
     expect(metadata.icc).toEqual(source.icc)
-    expect(info).toEqual(expect.objectContaining({
-      width: 824,
-      height: 824,
-      trimOffsetLeft: -100,
-      trimOffsetTop: -100,
-    }))
+    const left = -(info.trimOffsetLeft ?? 0)
+    const top = -(info.trimOffsetTop ?? 0)
+    const right = 1024 - left - info.width
+    const bottom = 1024 - top - info.height
+    expect(info.width).toBeLessThanOrEqual(824)
+    expect(info.height).toBeLessThanOrEqual(824)
+    expect(left).toBe(right)
+    expect(top).toBe(bottom)
   })
 
   it('keeps Electron out of production dependencies consumed by electron-builder', () => {

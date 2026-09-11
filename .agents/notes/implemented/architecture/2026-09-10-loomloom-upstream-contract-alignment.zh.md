@@ -137,6 +137,15 @@ CLI 渲染 `estimatedBuyerPayable`/`estimatedBuyerPayableT`、`taskFixedFee`/`ta
 
 `publish_listing` 是唯一新增的写入操作。金额换算复用共享常量 `RAW_UNITS_PER_CURRENCY`，使两个方向的换算共用同一处定义。`list_my_templates` 的存在是必要的：发布需要私有模板 id 与版本 id，而其他工具都无法提供。
 
+#### `loomloom_list_skillbots` 的分页策略
+
+上游把 `pageSize` 硬性限制为 100，市场现有约 225 个上架，因此全量遍历需要 3 页。第三页在上游侧很慢（实测 23–66s，偶尔超时），导致每次无参调用 `list_skillbots` 都要卡几十秒。该工具现在区分「浏览」与「搜索」：
+
+- **无 `keyword`**：只取第一页（`pageSize=100`，约 1.5s）直接返回。浏览场景绝不为慢尾页买单。
+- **带 `keyword`**：继续有界翻页直至集齐全量，再在本地对全量做匹配。这保留了「搜索基于全量数据匹配」的原始契约，代价是慢的第三页——这是上游 `offset=200` 分页的服务端性能问题，客户端无法消除。
+
+翻页仍受 `MAX_MARKET_PAGES` / `MAX_MARKET_LISTINGS` 保护，病态上游不会导致死循环或越界。
+
 ### Host 路由（客户端/文件流程）
 
 | 路由 | 上游端点 | 说明 |

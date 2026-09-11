@@ -135,7 +135,7 @@ export function LoomloomMarketPage({ t }: LoomloomMarketPageProps) {
     setSubmitting(true)
     setError(undefined)
     try {
-      setRunId(responseRunId(await executeSkillbot(selected.id, rows)))
+      setRunId(responseRunId(await executeSkillbot(selected.id, rows, quote.value.confirmationToken)))
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t('error'))
     } finally {

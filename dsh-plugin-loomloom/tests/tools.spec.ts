@@ -53,7 +53,9 @@ function fakeApi() {
           }],
         }
       }
-      if (path === '/marketListings' && init?.method === 'POST') return { id: 'new-listing-1', status: 'published', reviewStatus: 'pending' }
+      if (path === '/marketListings' && init?.method === 'POST') {
+        return { id: 'new-listing-1', status: 'published', reviewStatus: 'pending', reviewRequestId: 'review-1' }
+      }
       if (path === '/officialTemplates') {
         return { templates: [{ templateId: 'official-1', name: 'Report Writer', scenario: 'reporting', outputType: 'xlsx', version: 'v1' }] }
       }
@@ -283,13 +285,15 @@ test('publishes a listing and converts the decimal fee into raw API units', asyn
     { display_name: 'My Bot', template_id: 'template-1', template_version_id: 'version-1', task_fixed_fee: 0.5 },
     execution({}),
   )
-  assert.deepEqual(published, { id: 'new-listing-1', status: 'published', reviewStatus: 'pending' })
+  assert.deepEqual(published, { id: 'new-listing-1', status: 'published', reviewStatus: 'pending', reviewRequestId: 'review-1' })
   const call = api.calls.find(entry => entry.path === '/marketListings' && entry.init?.method === 'POST')
   assert.ok(call, 'expected a POST /marketListings call')
   const body = JSON.parse(String(call.init?.body)) as Record<string, unknown>
   assert.equal(body.taskFixedFeeT, 5_000_000)
   assert.equal(body.displayName, 'My Bot')
   assert.equal(body.templateId, 'template-1')
+  assert.equal(setup.requests.length, 1)
+  assert.match(String(setup.requests[0]?.reason), /template template-1, version version-1/u)
   // A missing fee must be rejected before any upstream write (the tool schema
   // marks it required, so the framework rejects the call up front).
   const writesBefore = api.calls.filter(entry => entry.path === '/marketListings' && entry.init?.method === 'POST').length
@@ -299,6 +303,23 @@ test('publishes a listing and converts the decimal fee into raw API units', asyn
     ),
   )
   assert.equal(api.calls.filter(entry => entry.path === '/marketListings' && entry.init?.method === 'POST').length, writesBefore)
+})
+
+test('refuses an unapproved listing publication before the upstream write', async () => {
+  const api = fakeApi()
+  const setup = harness('rejected')
+  registerLoomTools(setup.context, new LoomSkillbotService(api as never))
+
+  await assert.rejects(
+    () => tool(setup.registered, 'loomloom_publish_listing').execute(
+      { display_name: 'My Bot', template_id: 'template-1', template_version_id: 'version-1', task_fixed_fee: 0.5 },
+      execution({}),
+    ),
+    (error: unknown) => error instanceof LoomApiError && error.status === 403,
+  )
+
+  assert.equal(api.calls.some(call => call.path === '/marketListings' && call.init?.method === 'POST'), false)
+  assert.match(String(setup.requests[0]?.reason), /fixed fee 0\.5/u)
 })
 
 test('lists official templates and reads one schema with field hints', async () => {

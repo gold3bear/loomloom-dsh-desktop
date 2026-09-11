@@ -2,6 +2,7 @@ import { LoomApiError, type LoomApi } from './loom-api.js'
 
 const ACCOUNT_API_URL = 'https://api.shengsuanyun.com/user/info'
 const MAX_ACCOUNT_RESPONSE_BYTES = 256 * 1024
+const ACCOUNT_TIMEOUT_MS = 10_000
 
 export interface LoomAccount {
   readonly configured: boolean
@@ -79,6 +80,29 @@ function optionalRoleFailure(cause: unknown): boolean {
     && ((cause as LoomApiError).status === 401 || (cause as LoomApiError).status === 403 || (cause as LoomApiError).status === 404)
 }
 
+async function boundedAccountBody(response: Response): Promise<string> {
+  const declared = Number(response.headers.get('content-length') ?? Number.NaN)
+  if (Number.isFinite(declared) && declared > MAX_ACCOUNT_RESPONSE_BYTES) {
+    await response.body?.cancel()
+    throw new Error('loomloom account response exceeded size limit')
+  }
+  const reader = response.body?.getReader()
+  if (reader === undefined) return ''
+  const chunks: Uint8Array[] = []
+  let size = 0
+  while (true) {
+    const next = await reader.read()
+    if (next.done) break
+    size += next.value.byteLength
+    if (size > MAX_ACCOUNT_RESPONSE_BYTES) {
+      await reader.cancel()
+      throw new Error('loomloom account response exceeded size limit')
+    }
+    chunks.push(next.value)
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks))
+}
+
 /**
  * Reads only the user fields needed by the identity surface. The raw user
  * payload and credential remain in Host memory.
@@ -99,6 +123,7 @@ export function createLoomAccountReaderWithToken(
         accept: 'application/json',
         'x-token': token.trim(),
       },
+      signal: AbortSignal.timeout(ACCOUNT_TIMEOUT_MS),
     })
     const creatorPromise = api.request('/creators/me/marketListings?pageSize=1')
       .then(payload => listingItems(payload).length > 0)
@@ -107,8 +132,7 @@ export function createLoomAccountReaderWithToken(
         return undefined
       })
     const response = await responsePromise
-    const body = await response.text()
-    if (body.length > MAX_ACCOUNT_RESPONSE_BYTES) throw new Error('loomloom account response exceeded size limit')
+    const body = await boundedAccountBody(response)
     if (!response.ok) {
       throw new LoomApiError(response.status, 'loomloom account is unavailable')
     }

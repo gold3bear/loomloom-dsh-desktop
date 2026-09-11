@@ -80,6 +80,7 @@ export interface LoomSkillbotDetail extends LoomListing {
 
 export interface LoomMarketQuote {
   readonly estimatedBuyerPayable: string
+  readonly confirmationToken: string
   readonly currency?: string
   readonly taskFixedFee?: string
 }
@@ -360,19 +361,21 @@ export async function readSkillbot(listingId: string, signal?: AbortSignal): Pro
 export async function quoteSkillbot(
   listingId: string,
   inputRows: readonly Record<string, unknown>[],
-  listingVersionId = '',
   signal?: AbortSignal,
 ): Promise<LoomMarketQuote> {
   if (!ID_PATTERN.test(listingId)) throw new LoomClientApiError('invalid SkillBot id', 400)
   const url = new URL('/api/loomloom/market/skillbot/quote', window.location.origin)
   url.searchParams.set('listingId', listingId)
-  const payload = await postJson<LoomMarketQuote>(url, signal, { inputRows, listingVersionId })
+  const payload = await postJson<LoomMarketQuote>(url, signal, { inputRows })
   const root = record(payload)
   const quote = record(root.quote ?? root.data)
   const payable = monetary(quote.estimatedBuyerPayable ?? quote.buyerPayable ?? root.estimatedBuyerPayable)
   const fee = monetary(quote.taskFixedFee ?? root.taskFixedFee)
+  const confirmationToken = string(root.confirmationToken)
+  if (confirmationToken === '') throw new LoomClientApiError('loomloom quote did not return a confirmation token', 502)
   return {
     estimatedBuyerPayable: payable.amount,
+    confirmationToken,
     ...(payable.currency === undefined && string(quote.currency ?? root.currency) === ''
       ? {}
       : { currency: payable.currency ?? string(quote.currency ?? root.currency) }),
@@ -383,16 +386,17 @@ export async function quoteSkillbot(
 export async function executeSkillbot(
   listingId: string,
   inputRows: readonly Record<string, unknown>[],
-  listingVersionId = '',
+  confirmationToken: string,
   signal?: AbortSignal,
 ): Promise<unknown> {
   if (!ID_PATTERN.test(listingId)) throw new LoomClientApiError('invalid SkillBot id', 400)
+  if (confirmationToken.trim() === '') throw new LoomClientApiError('invalid quote confirmation', 400)
   const url = new URL('/api/loomloom/market/skillbot/execute', window.location.origin)
   url.searchParams.set('listingId', listingId)
   return await postJson<unknown>(url, signal, {
     inputRows,
-    listingVersionId,
     clientRequestId: `loomloom-ui-${crypto.randomUUID()}`,
+    confirmationToken,
     confirm: true,
   })
 }

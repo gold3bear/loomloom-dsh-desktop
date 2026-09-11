@@ -7,6 +7,9 @@ const DRAFT_TTL_MS = 10 * 60_000
 const ID_PATTERN = /^[A-Za-z0-9._-]{1,200}$/
 /** Upstream monetary unit system: 10,000,000 raw API units equal one currency unit. */
 const RAW_UNITS_PER_CURRENCY = 10_000_000
+const RAW_UNITS_PER_CURRENCY_BIGINT = 10_000_000n
+const MAX_MARKET_PAGES = 20
+const MAX_MARKET_LISTINGS = MAX_MARKET_PAGES * 100
 
 /**
  * Run statuses that mark a run as no longer progressing on the server. A run
@@ -184,6 +187,7 @@ export interface PublishedListing {
   readonly id: string
   readonly status?: string
   readonly reviewStatus?: string
+  readonly reviewRequestId?: string
   readonly name?: string
 }
 
@@ -256,7 +260,6 @@ export interface DraftToolValue {
 
 interface StoredDraft extends ExecutionDraft {
   readonly agent: object
-  readonly listingVersionId: string
   readonly inputRows: readonly Record<string, unknown>[]
   readonly fingerprint: string
   readonly clientRequestId: string
@@ -380,22 +383,25 @@ function inputRows(value: unknown): readonly Record<string, unknown>[] {
 }
 
 function validateRows(fields: readonly SkillbotField[], rows: readonly Record<string, unknown>[]): void {
+  const declared = new Set(fields.map(field => field.key))
   for (const [rowIndex, row] of rows.entries()) {
+    for (const key of Object.keys(row)) {
+      if (!declared.has(key)) throw new LoomApiError(400, `inputRows[${rowIndex}].${key} is not declared by the public input schema`)
+    }
     for (const field of fields) {
       const value = row[field.key]
       if (field.required && (value === undefined || value === null || value === '')) {
         throw new LoomApiError(400, `inputRows[${rowIndex}].${field.key} is required`)
       }
       if (value === undefined || value === null) continue
-      if (field.enumValues !== undefined && (!Array.isArray(field.enumValues) || typeof value !== 'string' || !field.enumValues.includes(value))) {
-        throw new LoomApiError(400, `inputRows[${rowIndex}].${field.key} must be one of the declared values`)
-      }
       if (field.valueType === 'boolean' || field.valueType === 'bool') {
         if (typeof value !== 'boolean') throw new LoomApiError(400, `inputRows[${rowIndex}].${field.key} must be a boolean`)
       } else if (field.valueType === 'integer') {
         if (typeof value !== 'number' || !Number.isInteger(value)) throw new LoomApiError(400, `inputRows[${rowIndex}].${field.key} must be an integer`)
       } else if (field.valueType === 'number' || field.valueType === 'float') {
         if (typeof value !== 'number' || !Number.isFinite(value)) throw new LoomApiError(400, `inputRows[${rowIndex}].${field.key} must be a number`)
+      } else if (field.valueType === 'enum') {
+        if (typeof value !== 'string') throw new LoomApiError(400, `inputRows[${rowIndex}].${field.key} must be a string`)
       } else if (field.valueType === 'string' && typeof value !== 'string') {
         throw new LoomApiError(400, `inputRows[${rowIndex}].${field.key} must be a string`)
       }
@@ -576,13 +582,18 @@ function money(value: Record<string, unknown>, moneyKey: string, rawKey: string,
   const converted = monetaryText(value[moneyKey])
   if (converted !== undefined) return { ...converted, ...(converted.currency === undefined && currency !== '' ? { currency } : {}) }
   const raw = value[rawKey]
-  const units = typeof raw === 'number' && Number.isFinite(raw)
-    ? raw
-    : typeof raw === 'string' && raw.trim() !== '' && Number.isFinite(Number(raw))
-      ? Number(raw)
+  const units = typeof raw === 'number' && Number.isSafeInteger(raw)
+    ? BigInt(raw)
+    : typeof raw === 'string' && /^-?\d+$/u.test(raw.trim())
+      ? BigInt(raw.trim())
       : undefined
   if (units === undefined) return undefined
-  return { amount: String(units / RAW_UNITS_PER_CURRENCY), ...(currency === '' ? {} : { currency }) }
+  const negative = units < 0n
+  const absolute = negative ? -units : units
+  const whole = absolute / RAW_UNITS_PER_CURRENCY_BIGINT
+  const fraction = (absolute % RAW_UNITS_PER_CURRENCY_BIGINT).toString().padStart(7, '0').replace(/0+$/u, '')
+  const amount = `${negative ? '-' : ''}${whole}${fraction === '' ? '' : `.${fraction}`}`
+  return { amount, ...(currency === '' ? {} : { currency }) }
 }
 
 function parseQuote(value: unknown): MarketQuote {
@@ -606,27 +617,38 @@ export class LoomSkillbotService {
   constructor(private readonly api: LoomApi, private readonly now: () => number = Date.now) {}
 
   async list(signal?: AbortSignal, options: { keyword?: string } = {}): Promise<readonly SkillbotSummary[]> {
-    // Fetch the complete market dataset by walking every page; the upstream
-    // keyword search is unreliable (especially for non-ASCII terms), so a
-    // keyword filters the full dataset locally instead of being forwarded.
+    // Browsing returns the first page quickly. Keyword search walks the bounded
+    // dataset because the upstream keyword matching is unreliable for non-ASCII.
     const merged: SkillbotSummary[] = []
     const seen = new Set<string>()
     let pageToken = ''
-    for (;;) {
+    let complete = false
+    const keyword = text(options.keyword)
+    for (let page = 0; page < MAX_MARKET_PAGES; page += 1) {
       const query = new URLSearchParams({ pageSize: '100' })
       if (pageToken !== '') query.set('pageToken', pageToken)
       const payload = asRecord(await this.api.request(`/marketListings?${query.toString()}`, {}, signal))
       const items = Array.isArray(payload.items) ? payload.items : []
       for (const item of items) {
         const candidate = summary(asRecord(item))
-        if (candidate.available) merged.push(candidate)
+        if (candidate.available) {
+          if (merged.length >= MAX_MARKET_LISTINGS) throw new LoomApiError(502, 'loomloom market listing limit exceeded')
+          merged.push(candidate)
+        }
       }
       pageToken = nextPageToken(payload)
-      if (pageToken === '') break
+      if (keyword === '') {
+        complete = true
+        break
+      }
+      if (pageToken === '') {
+        complete = true
+        break
+      }
       if (seen.has(pageToken)) throw new LoomApiError(502, 'loomloom returned a repeating market listing page token')
       seen.add(pageToken)
     }
-    const keyword = text(options.keyword)
+    if (!complete) throw new LoomApiError(502, 'loomloom market page limit exceeded')
     return keyword === '' ? merged : matchKeyword(merged, keyword)
   }
 
@@ -730,25 +752,35 @@ export class LoomSkillbotService {
     if (!ID_PATTERN.test(templateId)) throw new LoomApiError(400, 'templateId is required')
     const templateVersionId = text(input.templateVersionId)
     if (!ID_PATTERN.test(templateVersionId)) throw new LoomApiError(400, 'templateVersionId is required')
-    if (!Number.isFinite(input.taskFixedFee) || input.taskFixedFee < 0) throw new LoomApiError(400, 'taskFixedFee must be a non-negative number')
+    const listingId = text(input.listingId)
+    if (listingId !== '' && !ID_PATTERN.test(listingId)) throw new LoomApiError(400, 'listingId is invalid')
+    if (!Number.isFinite(input.taskFixedFee) || input.taskFixedFee < 0 || input.taskFixedFee > Number.MAX_SAFE_INTEGER / RAW_UNITS_PER_CURRENCY) {
+      throw new LoomApiError(400, 'taskFixedFee must be a non-negative number that can be represented exactly')
+    }
+    const scaledFee = input.taskFixedFee * RAW_UNITS_PER_CURRENCY
+    if (!Number.isInteger(scaledFee)) throw new LoomApiError(400, 'taskFixedFee supports at most 7 decimal places')
+    const taskFixedFeeT = scaledFee
+    if (!Number.isSafeInteger(taskFixedFeeT)) throw new LoomApiError(400, 'taskFixedFee must be representable in raw API units')
     const payload = {
       displayName,
       templateId,
       templateVersionId,
-      taskFixedFeeT: Math.round(input.taskFixedFee * RAW_UNITS_PER_CURRENCY),
+      taskFixedFeeT,
       ...(text(input.description) === '' ? {} : { description: text(input.description) }),
-      ...(text(input.listingId) === '' ? {} : { listingId: text(input.listingId) }),
+      ...(listingId === '' ? {} : { listingId }),
     }
     const response = asRecord(await this.api.request('/marketListings', { method: 'POST', body: JSON.stringify(payload) }, signal))
     const id = text(response.id) || text(response.listingId)
     if (!ID_PATTERN.test(id)) throw new LoomApiError(502, 'loomloom did not return a published listing id')
     const status = text(response.status)
     const reviewStatus = pickText(response, ['reviewStatus', 'review_status'])
+    const reviewRequestId = pickText(response, ['reviewRequestId', 'review_request_id'])
     const name = text(response.displayName)
     return {
       id,
       ...(status === '' ? {} : { status }),
       ...(reviewStatus === '' ? {} : { reviewStatus }),
+      ...(reviewRequestId === '' ? {} : { reviewRequestId }),
       ...(name === '' ? {} : { name }),
     }
   }
@@ -828,18 +860,17 @@ export class LoomSkillbotService {
     }
   }
 
-  async prepare(agent: object, listingId: string, listingVersionId: string | undefined, rows: unknown, signal?: AbortSignal): Promise<ExecutionDraft> {
+  async prepare(agent: object, listingId: string, rows: unknown, signal?: AbortSignal): Promise<ExecutionDraft> {
     const detail = await this.get(listingId, signal)
     if (!detail.available) throw new LoomApiError(409, 'the selected SkillBot is not available')
     const normalizedRows = inputRows(rows)
     validateRows(detail.fields, normalizedRows)
-    const version = listingVersionId === undefined || listingVersionId === '' ? detail.versionId ?? '' : listingVersionId
     const quote = parseQuote(await this.api.request(
       `/marketListings/${encodeURIComponent(listingId)}:quote`,
-      { method: 'POST', body: JSON.stringify({ inputRows: normalizedRows, listingVersionId: version }) },
+      { method: 'POST', body: JSON.stringify({ inputRows: normalizedRows }) },
       signal,
     ))
-    const fingerprint = createHash('sha256').update(canonicalJson({ listingId, version, normalizedRows })).digest('hex')
+    const fingerprint = createHash('sha256').update(canonicalJson({ listingId, normalizedRows })).digest('hex')
     this.prune()
     const draft: StoredDraft = {
       id: `loom-draft-${randomUUID()}`,
@@ -847,7 +878,6 @@ export class LoomSkillbotService {
       skillbot: detail,
       rowCount: normalizedRows.length,
       agent,
-      listingVersionId: version,
       inputRows: normalizedRows,
       fingerprint,
       clientRequestId: `loomloom-dsh-${randomUUID()}`,
@@ -861,11 +891,10 @@ export class LoomSkillbotService {
     this.prune()
     const draft = this.drafts.get(draftId)
     if (draft === undefined || draft.agent !== agent) throw new LoomApiError(404, 'execution draft is unavailable')
-    const currentFingerprint = createHash('sha256').update(canonicalJson({ listingId: draft.skillbot.id, version: draft.listingVersionId, normalizedRows: draft.inputRows })).digest('hex')
+    const currentFingerprint = createHash('sha256').update(canonicalJson({ listingId: draft.skillbot.id, normalizedRows: draft.inputRows })).digest('hex')
     if (draft.fingerprint !== currentFingerprint) throw new LoomApiError(409, 'execution draft integrity check failed')
     const payload = {
       inputRows: draft.inputRows,
-      listingVersionId: draft.listingVersionId,
       clientRequestId: draft.clientRequestId,
       confirm: true,
     }

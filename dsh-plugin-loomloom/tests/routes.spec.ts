@@ -77,7 +77,11 @@ async function startServer(options: {
 
 async function readRaw(server: TestServer, path: string, headers: Record<string, string> = {}, method = 'GET', body?: string): Promise<{ readonly status: number, readonly raw: Buffer, readonly headers: IncomingMessage['headers'] }> {
   return await new Promise((resolve, reject) => {
-    const req = request({ hostname: '127.0.0.1', port: server.port, path, headers, method }, res => {
+    const requestHeaders = { ...headers }
+    if (method !== 'GET' && requestHeaders.origin === undefined && requestHeaders.host !== undefined) {
+      requestHeaders.origin = `http://${requestHeaders.host}`
+    }
+    const req = request({ hostname: '127.0.0.1', port: server.port, path, headers: requestHeaders, method }, res => {
       const chunks: Buffer[] = []
       res.on('data', chunk => chunks.push(Buffer.from(chunk)))
       res.on('end', () => resolve({ status: res.statusCode ?? 0, raw: Buffer.concat(chunks), headers: res.headers }))
@@ -102,6 +106,32 @@ test('Host routes require the DSH loopback authority before reading credentials 
     const result = await read(server, '/api/loomloom/credentials', { host: `evil.example:${server.port}` })
     assert.equal(result.status, 403)
     assert.deepEqual(result.body, { error: 'loomloom request authority rejected' })
+    assert.equal(server.calls.length, 0)
+  } finally { await server.close() }
+})
+
+test('Host mutation routes reject cross-origin and non-JSON browser requests', async () => {
+  const server = await startServer()
+  const host = `127.0.0.1:${server.port}`
+  try {
+    const crossOrigin = await read(
+      server,
+      '/api/loomloom/market/skillbot/execute?listingId=listing-1',
+      { host, origin: 'https://evil.example', 'content-type': 'text/plain' },
+      'POST',
+      JSON.stringify({ inputRows: [{ topic: 'Coffee' }], confirm: true, clientRequestId: 'request-123' }),
+    )
+    assert.equal(crossOrigin.status, 403)
+    assert.equal(server.calls.length, 0)
+
+    const wrongType = await read(
+      server,
+      '/api/loomloom/market/skillbot/quote?listingId=listing-1',
+      { host, 'content-type': 'text/plain' },
+      'POST',
+      JSON.stringify({ inputRows: [{ topic: 'Coffee' }] }),
+    )
+    assert.equal(wrongType.status, 415)
     assert.equal(server.calls.length, 0)
   } finally { await server.close() }
 })
@@ -272,12 +302,57 @@ test('market list forwards bounded pagination parameters', async () => {
 })
 
 test('market quote and execute routes enforce bounded rows and explicit confirmation', async () => {
-  const server = await startServer({ apiResponse: { runId: 'run-1', status: 'queued' } })
+  const server = await startServer({ apiResponse: { estimatedBuyerPayable: { amount: '1.5', currency: 'CNY' } } })
+  const host = `127.0.0.1:${server.port}`
   try {
-    const quote = await read(server, '/api/loomloom/market/skillbot/quote?listingId=listing-1', { host: `127.0.0.1:${server.port}`, 'content-type': 'application/json' }, 'POST')
-    assert.equal(quote.status, 400)
-    const execute = await read(server, '/api/loomloom/market/skillbot/execute?listingId=listing-1', { host: `127.0.0.1:${server.port}`, 'content-type': 'application/json' }, 'POST')
-    assert.equal(execute.status, 400)
+    const quote = await read(
+      server,
+      '/api/loomloom/market/skillbot/quote?listingId=listing-1',
+      { host, 'content-type': 'application/json' },
+      'POST',
+      JSON.stringify({ inputRows: [{ topic: 'Coffee' }] }),
+    )
+    assert.equal(quote.status, 200)
+    const confirmationToken = String((quote.body as Record<string, unknown>).confirmationToken)
+    assert.match(confirmationToken, /^[A-Za-z0-9-]{36}$/u)
+    const quoteBody = JSON.parse(String(server.calls[0]?.init?.body)) as Record<string, unknown>
+    assert.deepEqual(quoteBody, { inputRows: [{ topic: 'Coffee' }] })
+
+    const changed = await read(
+      server,
+      '/api/loomloom/market/skillbot/execute?listingId=listing-1',
+      { host, 'content-type': 'application/json' },
+      'POST',
+      JSON.stringify({
+        inputRows: [{ topic: 'Changed' }], confirm: true, clientRequestId: 'request-123', confirmationToken,
+      }),
+    )
+    assert.equal(changed.status, 403)
+    assert.equal(server.calls.length, 1)
+
+    const execute = await read(
+      server,
+      '/api/loomloom/market/skillbot/execute?listingId=listing-1',
+      { host, 'content-type': 'application/json' },
+      'POST',
+      JSON.stringify({
+        inputRows: [{ topic: 'Coffee' }], confirm: true, clientRequestId: 'request-123', confirmationToken,
+      }),
+    )
+    assert.equal(execute.status, 200)
+    assert.equal(server.calls.length, 2)
+
+    const replay = await read(
+      server,
+      '/api/loomloom/market/skillbot/execute?listingId=listing-1',
+      { host, 'content-type': 'application/json' },
+      'POST',
+      JSON.stringify({
+        inputRows: [{ topic: 'Coffee' }], confirm: true, clientRequestId: 'request-123', confirmationToken,
+      }),
+    )
+    assert.equal(replay.status, 403)
+    assert.equal(server.calls.length, 2)
   } finally {
     await server.close()
   }
@@ -356,31 +431,78 @@ test('orchestration input upload base64 encodes the JSONL content', async () => 
   } finally { await server.close() }
 })
 
-test('workbook run requires an explicit confirmation and a client request id', async () => {
+test('workbook run forwards only an explicit confirmation and stable client request id', async () => {
   const server = await startServer({ apiResponse: { runId: 'run-1' } })
   const host = `127.0.0.1:${server.port}`
   try {
+    const quote = await read(
+      server,
+      '/api/loomloom/market/workbook/quote?listingId=listing-1',
+      { host, 'content-type': 'application/json' },
+      'POST',
+      JSON.stringify({ filename: 'filled.xlsx', content: 'ZmlsbGVk' }),
+    )
+    assert.equal(quote.status, 200)
+    const confirmationToken = String((quote.body as Record<string, unknown>).confirmationToken)
+
     const missing = await read(server, '/api/loomloom/market/workbook/run?listingId=listing-1', { host, 'content-type': 'application/json' }, 'POST', JSON.stringify({}))
     assert.equal(missing.status, 400)
-    assert.equal(server.calls.length, 0)
+    assert.equal(server.calls.length, 1)
+
+    const unconfirmed = await read(
+      server,
+      '/api/loomloom/market/workbook/run?listingId=listing-1',
+      { host, 'content-type': 'application/json' },
+      'POST',
+      JSON.stringify({ filename: 'filled.xlsx', content: 'ZmlsbGVk', clientRequestId: 'loomloom-ui-workbook-1', confirmationToken }),
+    )
+    assert.equal(unconfirmed.status, 403)
+    assert.equal(server.calls.length, 1)
+
+    const missingRequestId = await read(
+      server,
+      '/api/loomloom/market/workbook/run?listingId=listing-1',
+      { host, 'content-type': 'application/json' },
+      'POST',
+      JSON.stringify({ filename: 'filled.xlsx', content: 'ZmlsbGVk', confirm: true, confirmationToken }),
+    )
+    assert.equal(missingRequestId.status, 400)
+    assert.equal(server.calls.length, 1)
 
     const run = await read(
       server,
       '/api/loomloom/market/workbook/run?listingId=listing-1',
       { host, 'content-type': 'application/json' },
       'POST',
-      JSON.stringify({ filename: 'filled.xlsx', content: 'ZmlsbGVk' }),
+      JSON.stringify({ filename: 'filled.xlsx', content: 'ZmlsbGVk', confirm: true, clientRequestId: 'loomloom-ui-workbook-1', confirmationToken }),
     )
     assert.equal(run.status, 200)
-    const body = JSON.parse(String(server.calls[0]!.init?.body)) as Record<string, unknown>
+    const body = JSON.parse(String(server.calls[1]!.init?.body)) as Record<string, unknown>
     assert.equal(body.confirm, true)
-    assert.match(String(body.clientRequestId), /^loomloom-ui-workbook-/)
+    assert.equal(body.clientRequestId, 'loomloom-ui-workbook-1')
     assert.equal(body.filename, 'filled.xlsx')
 
     // Quote and validate stay unconfirmed: they never spend money.
     await read(server, '/api/loomloom/market/workbook/quote?listingId=listing-1', { host, 'content-type': 'application/json' }, 'POST', JSON.stringify({ filename: 'a.xlsx', content: 'YWJj' }))
-    const quoteBody = JSON.parse(String(server.calls[1]!.init?.body)) as Record<string, unknown>
+    const quoteBody = JSON.parse(String(server.calls[2]!.init?.body)) as Record<string, unknown>
     assert.equal('confirm' in quoteBody, false)
+  } finally { await server.close() }
+})
+
+test('workbook routes accept files larger than the generic JSON limit but within 16 MiB', async () => {
+  const server = await startServer({ apiResponse: { valid: true } })
+  const host = `127.0.0.1:${server.port}`
+  const content = Buffer.alloc(600 * 1024, 1).toString('base64')
+  try {
+    const result = await read(
+      server,
+      '/api/loomloom/market/workbook/validate?listingId=listing-1',
+      { host, 'content-type': 'application/json' },
+      'POST',
+      JSON.stringify({ filename: 'large.xlsx', content }),
+    )
+    assert.equal(result.status, 200)
+    assert.equal(server.calls.length, 1)
   } finally { await server.close() }
 })
 
@@ -443,5 +565,25 @@ test('market workbook download uses the real upstream content-disposition filena
     assert.equal(result.raw.toString('utf8'), 'xlsx')
     assert.match(String(result.headers['content-type']), /spreadsheetml/)
     assert.match(String(result.headers['content-disposition']), /019fccfe-c54c-73dc-b3ae-716b6589ae5d-1\.xlsx/)
+  } finally { await server.close() }
+})
+
+test('workbook download sanitizes control characters in an upstream filename', async () => {
+  const server = await startServer({
+    binaryResponse: {
+      base64: Buffer.from('xlsx').toString('base64'),
+      byteLength: 4,
+      contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      filename: 'report\r\nSet-Cookie: forged.xlsx',
+    },
+  })
+  const host = `127.0.0.1:${server.port}`
+  try {
+    const result = await readRaw(server, '/api/loomloom/market/workbook?listingId=listing-1', { host })
+    assert.equal(result.status, 200)
+    const disposition = String(result.headers['content-disposition'])
+    assert.doesNotMatch(disposition, /[\r\n]/u)
+    assert.doesNotMatch(disposition, /Set-Cookie:/u)
+    assert.match(disposition, /report__Set-Cookie_ forged\.xlsx/u)
   } finally { await server.close() }
 })

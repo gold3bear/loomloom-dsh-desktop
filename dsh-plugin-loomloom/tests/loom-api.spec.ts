@@ -71,6 +71,20 @@ test('requestBinary decodes a workbook download and sanitizes the suggested file
   } finally { globalThis.fetch = originalFetch }
 })
 
+test('requestBinary decodes encoded filenames and removes header-control characters', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(Buffer.from('xlsx-bytes'), {
+    status: 200,
+    headers: {
+      'content-disposition': "attachment; filename*=UTF-8''report%0D%0ASet-Cookie%3Aevil.xlsx",
+    },
+  })
+  try {
+    const payload = await new LoomApi(resolveLoomConfig()).requestBinary('/marketListings/listing-1/workbook')
+    assert.equal(payload.filename, 'report__Set-Cookie_evil.xlsx')
+  } finally { globalThis.fetch = originalFetch }
+})
+
 test('requestBinary omits the filename when the upstream sends no disposition header', async () => {
   const originalFetch = globalThis.fetch
   globalThis.fetch = async () => new Response(Buffer.from('x'), { status: 200 })
@@ -88,6 +102,27 @@ test('requestBinary surfaces a failed workbook status without leaking the body',
       () => new LoomApi(resolveLoomConfig()).requestBinary('/marketListings/listing-1/workbook'),
       (error: unknown) => error instanceof LoomApiError && error.status === 403,
     )
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('requestBinary rejects an oversized declared response before buffering it', async () => {
+  const originalFetch = globalThis.fetch
+  let readAttempted = false
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    headers: new Headers({ 'content-length': String(16 * 1024 * 1024 + 1) }),
+    get body() {
+      readAttempted = true
+      throw new Error('oversized body must not be read')
+    },
+  }) as never
+  try {
+    await assert.rejects(
+      () => new LoomApi(resolveLoomConfig()).requestBinary('/marketListings/listing-1/workbook'),
+      (error: unknown) => error instanceof LoomApiError && error.status === 502 && error.message === 'loomloom workbook response exceeded size limit',
+    )
+    assert.equal(readAttempted, false)
   } finally { globalThis.fetch = originalFetch }
 })
 

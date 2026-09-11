@@ -159,20 +159,22 @@ test('client sends quoted and confirmed SkillBot requests with same-origin route
     requests.push({ url: String(input), init: init ?? {} })
     return new Response(JSON.stringify(
       String(input).includes('/quote')
-        ? { quote: { estimatedBuyerPayable: { amount: '1.50', currency: 'CNY' } } }
+        ? { quote: { estimatedBuyerPayable: { amount: '1.50', currency: 'CNY' } }, confirmationToken: 'quote-token-1' }
         : { runId: 'run-1', status: 'queued' },
     ))
   }
   const rows = [{ topic: 'Coffee' }]
   assert.deepEqual(await quoteSkillbot('listing-1', rows), {
     estimatedBuyerPayable: '1.50',
+    confirmationToken: 'quote-token-1',
     currency: 'CNY',
   })
-  assert.deepEqual(await executeSkillbot('listing-1', rows), { runId: 'run-1', status: 'queued' })
+  assert.deepEqual(await executeSkillbot('listing-1', rows, 'quote-token-1'), { runId: 'run-1', status: 'queued' })
   assert.equal(requests.length, 2)
-  assert.deepEqual(JSON.parse(String(requests[0]?.init.body)), { inputRows: rows, listingVersionId: '' })
+  assert.deepEqual(JSON.parse(String(requests[0]?.init.body)), { inputRows: rows })
   const executionBody = JSON.parse(String(requests[1]?.init.body)) as Record<string, unknown>
   assert.deepEqual(executionBody.inputRows, rows)
   assert.equal(executionBody.confirm, true)
+  assert.equal(executionBody.confirmationToken, 'quote-token-1')
   assert.match(String(executionBody.clientRequestId), /^loomloom-ui-/u)
 })

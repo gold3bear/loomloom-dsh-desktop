@@ -320,8 +320,7 @@ POST /api/loomloom/market/skillbot/quote?listingId=<id>
 
 ```json
 {
-  "inputRows": [{ "field": "value" }],
-  "listingVersionId": ""
+  "inputRows": [{ "field": "value" }]
 }
 ```
 
@@ -353,8 +352,8 @@ POST /api/loomloom/market/skillbot/execute?listingId=<id>
 ```json
 {
   "inputRows": [{ "field": "value" }],
-  "listingVersionId": "",
   "clientRequestId": "loomloom-ui-...",
+  "confirmationToken": "<opaque quote token>",
   "confirm": true
 }
 ```
@@ -363,7 +362,7 @@ POST /api/loomloom/market/skillbot/execute?listingId=<id>
 
 1. 用户已经看到当前报价；
 2. 用户点击“确认并执行”；
-3. 当前输入未在报价后发生变化；
+3. Host 校验短时 `confirmationToken`，确认 listing 与输入哈希未在报价后发生变化；
 4. 新生成 `clientRequestId`；
 5. 上游 execute 只发送一次，网络歧义重试只能复用同一个 request ID。
 
@@ -436,7 +435,8 @@ POST /api/loomloom/market/skillbot/execute?listingId=<id>
 - DOM 不出现 API Key、Authorization header、OAuth code、state、verifier；
 - Market 页面不显示原始上游 response；
 - URL 不包含 token 或执行输入；
-- Host route 只接受 loopback same-origin；
+- Host route 只接受 loopback authority，所有写请求还必须携带匹配的 `Origin`；
+- 有请求体的写请求只接受 `application/json`；
 - body 和 ID 均有边界校验。
 
 ## 10. 验收标准

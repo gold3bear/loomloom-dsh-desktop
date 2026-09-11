@@ -43,7 +43,7 @@ index 94ac544268102ebdc02c0af15934b08a19d8552e..6a8f2ea574ca4708cd7b8da6a66cbcec
  		*/
  		function OfficialBrandName() {
 -			return (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.BrandWordmark, { includeMark: false });
-+			return (0, react_jsx_runtime.jsx)("span", { children: "LoomLoom DSH桌面版" });
++			return (0, react_jsx_runtime.jsx)("span", { children: "胜算云" });
  		}
  		//#endregion
  		//#region lib/types/client/index.js

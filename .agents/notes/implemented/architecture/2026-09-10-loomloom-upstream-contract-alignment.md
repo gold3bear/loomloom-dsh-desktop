@@ -137,6 +137,15 @@ The buy-side SkillBot loop (`list → show → quote → run → result`) was th
 
 `publish_listing` is the only new write. The fee is converted with the shared `RAW_UNITS_PER_CURRENCY` ratio so both directions use one constant. `list_my_templates` exists specifically because publishing needs a private template id and version id that no other tool can supply.
 
+#### `loomloom_list_skillbots` pagination profile
+
+The upstream caps `pageSize` at 100 and the market holds ~225 listings, so a full walk takes three pages. The third page is slow server-side (measured 23–66s, occasionally timing out), which made every no-argument `list_skillbots` call stall for tens of seconds. The tool now distinguishes browsing from searching:
+
+- **No `keyword`:** only the first page (`pageSize=100`, ~1.5s) is fetched and returned. Browsing never pays for the slow tail page.
+- **With `keyword`:** the bounded walk continues until the full dataset is collected, then matching runs locally against it. This preserves the original "search is matched against the full dataset" contract at the cost of the slow third page, which is a server-side pagination issue (`offset=200`) outside the client's control.
+
+The walk is still guarded by `MAX_MARKET_PAGES` / `MAX_MARKET_LISTINGS` so a pathological upstream cannot loop forever or exceed a bound.
+
 ### Host routes (client/file flows)
 
 | Route | Upstream endpoint | Notes |

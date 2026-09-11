@@ -41,21 +41,27 @@ test('prepares a draft only for schema-valid SkillBot input', async () => {
   const api = fakeApi()
   const service = new LoomSkillbotService(api as never)
   const agent = {}
-  const draft = await service.prepare(agent, 'listing-1', undefined, [{ topic: 'Coffee', count: 3, tone: 'warm' }])
+  const draft = await service.prepare(agent, 'listing-1', [{ topic: 'Coffee', count: 3, tone: 'warm' }])
   assert.equal(draft.rowCount, 1)
   assert.equal(draft.skillbot.fixedFee, '0.5')
   assert.deepEqual(draft.quote, { estimatedBuyerPayable: '1.50', currency: 'CNY', taskFixedFee: '0.5' })
   await assert.rejects(
-    () => service.prepare(agent, 'listing-1', undefined, [{ topic: 'Coffee', count: '3' }]),
+    () => service.prepare(agent, 'listing-1', [{ topic: 'Coffee', count: '3' }]),
     (error: unknown) => error instanceof LoomApiError && error.status === 400 && error.message.includes('must be an integer'),
   )
+  await assert.rejects(
+    () => service.prepare(agent, 'listing-1', [{ topic: 'Coffee', count: 3, privatePrompt: 'bypass' }]),
+    (error: unknown) => error instanceof LoomApiError && error.status === 400 && error.message.includes('is not declared'),
+  )
+  const serverValidatedEnum = await service.prepare(agent, 'listing-1', [{ topic: 'Coffee', count: 3, tone: 'new-server-value' }])
+  assert.equal(serverValidatedEnum.rowCount, 1)
 })
 
 test('quotes before executing an agent-owned draft once with confirm and a bound idempotency key', async () => {
   const api = fakeApi()
   const service = new LoomSkillbotService(api as never)
   const agent = {}
-  const draft = await service.prepare(agent, 'listing-1', undefined, [{ topic: 'Coffee', count: 3 }])
+  const draft = await service.prepare(agent, 'listing-1', [{ topic: 'Coffee', count: 3 }])
   const receipt = await service.execute(agent, draft.id)
   assert.deepEqual(receipt, { draftId: draft.id, accepted: true, runId: 'run-1', status: 'queued' })
   const call = api.calls.at(-1)!
@@ -63,7 +69,6 @@ test('quotes before executing an agent-owned draft once with confirm and a bound
   const body = JSON.parse(String(call.init?.body)) as Record<string, unknown>
   assert.deepEqual(body, {
     inputRows: [{ topic: 'Coffee', count: 3 }],
-    listingVersionId: 'version-1',
     clientRequestId: body.clientRequestId,
     confirm: true,
   })
@@ -74,7 +79,7 @@ test('quotes before executing an agent-owned draft once with confirm and a bound
 test('does not disclose a draft to another DSH chat agent', async () => {
   const service = new LoomSkillbotService(fakeApi() as never)
   const owner = {}
-  const draft = await service.prepare(owner, 'listing-1', undefined, [{ topic: 'Coffee', count: 3 }])
+  const draft = await service.prepare(owner, 'listing-1', [{ topic: 'Coffee', count: 3 }])
   assert.equal(service.describeDraft(draft.id, {}), undefined)
 })
 
@@ -141,8 +146,12 @@ test('lists the full market dataset across pages and matches a keyword locally',
   }
   const service = new LoomSkillbotService(api as never)
 
-  const all = await service.list()
-  assert.deepEqual(all.map(item => item.id), ['listing-1', 'listing-2'])
+  const browse = await service.list()
+  assert.deepEqual(browse.map(item => item.id), ['listing-1'])
+  assert.deepEqual(calls, ['/marketListings?pageSize=100'])
+
+  calls.length = 0
+  assert.deepEqual((await service.list(undefined, { keyword: 'COPY' })).map(item => item.id), ['listing-1'])
   assert.deepEqual(calls, [
     '/marketListings?pageSize=100',
     '/marketListings?pageSize=100&pageToken=page-2',
@@ -150,7 +159,6 @@ test('lists the full market dataset across pages and matches a keyword locally',
   ])
 
   // Keyword matching is local, case-insensitive and non-ASCII aware.
-  assert.deepEqual((await service.list(undefined, { keyword: 'COPY' })).map(item => item.id), ['listing-1'])
   assert.deepEqual((await service.list(undefined, { keyword: '翻译' })).map(item => item.id), ['listing-2'])
   assert.deepEqual(await service.list(undefined, { keyword: 'missing' }), [])
   // Multiple terms match against name/description/id and rank by hit count.
@@ -172,6 +180,29 @@ test('lists the full market dataset across pages and matches a keyword locally',
   assert.deepEqual(await withUnavailable.list(), [])
 })
 
+test('stops an unbounded market scan after a fixed page limit', async () => {
+  const calls: string[] = []
+  const api = {
+    async request(path: string): Promise<unknown> {
+      calls.push(path)
+      const page = calls.length + 1
+      return {
+        items: [{
+          id: `listing-${page}`, displayName: `SkillBot ${page}`, description: 'Paged result',
+          executionAvailabilityStatus: 'available', taskFixedFee: { amount: '0.5' }, listingVersionId: 'version-1',
+        }],
+        nextPageToken: `page-${page}`,
+      }
+    },
+  }
+
+  await assert.rejects(
+    () => new LoomSkillbotService(api as never).list(undefined, { keyword: 'paged' }),
+    (error: unknown) => error instanceof LoomApiError && error.status === 502 && error.message === 'loomloom market page limit exceeded',
+  )
+  assert.equal(calls.length, 20)
+})
+
 test('converts raw-unit *T monetary fields when the converted object is absent', async () => {
   const rawUnitsListing = {
     ...listing(),
@@ -189,7 +220,7 @@ test('converts raw-unit *T monetary fields when the converted object is absent',
   }
   const service = new LoomSkillbotService(api as never)
   const agent = {}
-  const draft = await service.prepare(agent, 'listing-1', undefined, [{ topic: 'Coffee', count: 3 }])
+  const draft = await service.prepare(agent, 'listing-1', [{ topic: 'Coffee', count: 3 }])
   assert.equal(draft.skillbot.fixedFee, '0.5')
   assert.deepEqual(draft.quote, { estimatedBuyerPayable: '1.5', currency: 'CNY', taskFixedFee: '0.5' })
   // Converted object still wins over the raw-unit integer when both exist.
@@ -200,7 +231,58 @@ test('converts raw-unit *T monetary fields when the converted object is absent',
       throw new Error(`unexpected path ${path}`)
     },
   }
-  const bothDraft = await new LoomSkillbotService(both as never).prepare(agent, 'listing-1', undefined, [{ topic: 'Coffee', count: 3 }])
+  const bothDraft = await new LoomSkillbotService(both as never).prepare(agent, 'listing-1', [{ topic: 'Coffee', count: 3 }])
   assert.equal(bothDraft.skillbot.fixedFee, '0.75')
   assert.deepEqual(bothDraft.quote, { estimatedBuyerPayable: '2.25', currency: 'CNY', taskFixedFee: '0.5' })
+})
+
+test('preserves large raw-unit monetary strings without Number precision loss', async () => {
+  const rawUnitsListing = { ...listing(), taskFixedFee: undefined, taskFixedFeeT: '9007199254740993', currency: 'CNY' }
+  delete rawUnitsListing.taskFixedFee
+  const api = {
+    async request(path: string): Promise<unknown> {
+      if (path === '/marketListings/listing-1') return rawUnitsListing
+      if (path.endsWith(':quote')) return { estimatedBuyerPayableT: '9007199254740993', currency: 'CNY' }
+      throw new Error(`unexpected path ${path}`)
+    },
+  }
+  const draft = await new LoomSkillbotService(api as never).prepare({}, 'listing-1', [{ topic: 'Coffee', count: 3 }])
+  assert.equal(draft.skillbot.fixedFee, '900719925.4740993')
+  assert.equal(draft.quote.estimatedBuyerPayable, '900719925.4740993')
+})
+
+test('rejects a listing fee that cannot be represented in raw API units', async () => {
+  let writes = 0
+  const service = new LoomSkillbotService({
+    async request(): Promise<unknown> {
+      writes += 1
+      return { id: 'listing-1' }
+    },
+  } as never)
+
+  await assert.rejects(
+    () => service.publishListing({
+      displayName: 'Too Expensive', templateId: 'template-1', templateVersionId: 'version-1', taskFixedFee: 1_000_000_000_000,
+    }),
+    (error: unknown) => error instanceof LoomApiError && error.status === 400,
+  )
+  assert.equal(writes, 0)
+})
+
+test('rejects a listing fee that would be silently rounded to different raw units', async () => {
+  let writes = 0
+  const service = new LoomSkillbotService({
+    async request(): Promise<unknown> {
+      writes += 1
+      return { id: 'listing-1' }
+    },
+  } as never)
+
+  await assert.rejects(
+    () => service.publishListing({
+      displayName: 'Precise Fee', templateId: 'template-1', templateVersionId: 'version-1', taskFixedFee: 0.00000015,
+    }),
+    (error: unknown) => error instanceof LoomApiError && error.status === 400 && error.message.includes('7 decimal places'),
+  )
+  assert.equal(writes, 0)
 })

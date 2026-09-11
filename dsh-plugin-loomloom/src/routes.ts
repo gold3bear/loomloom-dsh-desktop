@@ -5,14 +5,79 @@ import type { LoomCredentialStatus } from './credentials.js'
 import type { LoomBrowserLoginService } from './browser-login.js'
 import type { LoomBootstrap } from './bootstrap.js'
 import type { LoomAccount } from './account.js'
-import { randomUUID } from 'node:crypto'
-import { LoomApi, LoomApiError } from './loom-api.js'
+import { createHash, randomUUID } from 'node:crypto'
+import { LoomApi, LoomApiError, sanitizeDownloadFilename } from './loom-api.js'
 
 const PREFIX = '/api/loomloom'
 const ID_PATTERN = /^[A-Za-z0-9._-]{1,200}$/
 const LOGIN_SESSION_PATTERN = /^[A-Za-z0-9_-]{32}$/
 const CLIENT_REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{8,200}$/
-const MAX_REQUEST_BYTES = 512 * 1024
+const CONFIRMATION_TOKEN_PATTERN = /^[A-Za-z0-9-]{36}$/
+const MAX_JSON_REQUEST_BYTES = 512 * 1024
+const MAX_WORKBOOK_BYTES = 16 * 1024 * 1024
+const MAX_WORKBOOK_REQUEST_BYTES = Math.ceil(MAX_WORKBOOK_BYTES * 4 / 3) + 64 * 1024
+const QUOTE_TTL_MS = 10 * 60_000
+const MAX_QUOTE_DRAFTS = 100
+
+interface QuoteDraft {
+  readonly kind: 'rows' | 'workbook'
+  readonly listingId: string
+  readonly fingerprint: string
+  readonly expiresAt: number
+  clientRequestId?: string
+}
+
+class QuoteDraftStore {
+  readonly #drafts = new Map<string, QuoteDraft>()
+
+  create(kind: QuoteDraft['kind'], listingId: string, fingerprint: string): string {
+    this.prune()
+    if (this.#drafts.size >= MAX_QUOTE_DRAFTS) {
+      const oldest = this.#drafts.keys().next().value as string | undefined
+      if (oldest !== undefined) this.#drafts.delete(oldest)
+    }
+    const token = randomUUID()
+    this.#drafts.set(token, { kind, listingId, fingerprint, expiresAt: Date.now() + QUOTE_TTL_MS })
+    return token
+  }
+
+  require(token: unknown, kind: QuoteDraft['kind'], listingId: string, fingerprint: string, clientRequestId: string): string {
+    this.prune()
+    if (typeof token !== 'string' || !CONFIRMATION_TOKEN_PATTERN.test(token)) {
+      throw new LoomApiError(403, 'execution requires a valid quote confirmation')
+    }
+    const draft = this.#drafts.get(token)
+    if (draft === undefined || draft.kind !== kind || draft.listingId !== listingId || draft.fingerprint !== fingerprint) {
+      throw new LoomApiError(403, 'quote confirmation is unavailable or does not match the execution input')
+    }
+    if (draft.clientRequestId !== undefined && draft.clientRequestId !== clientRequestId) {
+      throw new LoomApiError(409, 'an ambiguous retry must reuse the original clientRequestId')
+    }
+    draft.clientRequestId = clientRequestId
+    return token
+  }
+
+  consume(token: string): void {
+    this.#drafts.delete(token)
+  }
+
+  private prune(): void {
+    const now = Date.now()
+    for (const [token, draft] of this.#drafts) {
+      if (draft.expiresAt <= now) this.#drafts.delete(token)
+    }
+  }
+}
+
+function inputFingerprint(listingId: string, value: unknown): string {
+  return createHash('sha256').update(listingId).update('\0').update(JSON.stringify(value)).digest('hex')
+}
+
+function withConfirmationToken(value: unknown, confirmationToken: string): Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? { ...value as Record<string, unknown>, confirmationToken }
+    : { data: value, confirmationToken }
+}
 
 function sendJson(res: ServerResponse, status: number, value: unknown): void {
   res.statusCode = status
@@ -32,11 +97,11 @@ function sendBinary(res: ServerResponse, payload: { base64: string, contentType:
   res.setHeader('content-type', payload.contentType)
   res.setHeader('cache-control', 'no-store')
   res.setHeader('x-content-type-options', 'nosniff')
-  res.setHeader('content-disposition', `attachment; filename="${payload.filename.replace(/["\\]/gu, '_')}"`)
+  res.setHeader('content-disposition', `attachment; filename="${sanitizeDownloadFilename(payload.filename) ?? 'download.xlsx'}"`)
   res.end(Buffer.from(payload.base64, 'base64'))
 }
 
-function sameOrigin(req: IncomingMessage, port: number): boolean {
+function sameAuthority(req: IncomingMessage, port: number): boolean {
   const host = req.headers.host?.toLowerCase()
   return host === `127.0.0.1:${port}` || host === `localhost:${port}`
 }
@@ -52,13 +117,16 @@ function credentialFailure(res: ServerResponse): void {
   sendJson(res, 503, { error: 'loomloom credential status is unavailable' })
 }
 
-async function requestBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+async function requestBody(req: IncomingMessage, maxBytes = MAX_JSON_REQUEST_BYTES): Promise<Record<string, unknown>> {
+  if (!/^application\/json(?:\s*;|$)/iu.test(req.headers['content-type'] ?? '')) {
+    throw new LoomApiError(415, 'content-type must be application/json')
+  }
   let size = 0
   const chunks: Buffer[] = []
   for await (const chunk of req) {
     const bytes = Buffer.from(chunk)
     size += bytes.byteLength
-    if (size > MAX_REQUEST_BYTES) throw new LoomApiError(413, 'request body is too large')
+    if (size > maxBytes) throw new LoomApiError(413, 'request body is too large')
     chunks.push(bytes)
   }
   try {
@@ -68,6 +136,20 @@ async function requestBody(req: IncomingMessage): Promise<Record<string, unknown
   } catch {
     throw new LoomApiError(400, 'request body must be a JSON object')
   }
+}
+
+function workbookPayload(body: Record<string, unknown>): { readonly filename: string, readonly content: string } {
+  const filename = typeof body.filename === 'string' ? body.filename.trim() : ''
+  const content = typeof body.content === 'string' ? body.content.trim() : ''
+  if (filename === '' || content === '') throw new LoomApiError(400, 'filename and content are required')
+  if (filename.length > 255) throw new LoomApiError(400, 'filename is too long')
+  if (content.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/u.test(content)) {
+    throw new LoomApiError(400, 'content must be valid base64')
+  }
+  if (Buffer.byteLength(content, 'base64') > MAX_WORKBOOK_BYTES) {
+    throw new LoomApiError(413, 'workbook is too large')
+  }
+  return { filename, content }
 }
 
 /**
@@ -82,9 +164,10 @@ async function forwardWorkbookAction(
   res: ServerResponse,
   api: LoomApi,
   action: string,
-  paid = false,
+  mode: 'prepare' | 'quote' | 'execute',
+  quoteDrafts: QuoteDraftStore,
 ): Promise<void> {
-  await forwardWorkbookTo(req, res, api, id => `/marketListings/${encodeURIComponent(id)}${action}`, 'listingId', paid)
+  await forwardWorkbookTo(req, res, api, id => `/marketListings/${encodeURIComponent(id)}${action}`, 'listingId', mode, quoteDrafts)
 }
 
 /** The official-template variant of {@link forwardWorkbookAction}. */
@@ -94,7 +177,7 @@ async function forwardTemplateWorkbookAction(
   api: LoomApi,
   action: string,
 ): Promise<void> {
-  await forwardWorkbookTo(req, res, api, id => `/officialTemplates/${encodeURIComponent(id)}${action}`, 'templateId', false)
+  await forwardWorkbookTo(req, res, api, id => `/officialTemplates/${encodeURIComponent(id)}${action}`, 'templateId', 'prepare')
 }
 
 async function forwardWorkbookTo(
@@ -103,23 +186,37 @@ async function forwardWorkbookTo(
   api: LoomApi,
   pathFor: (id: string) => string,
   idParam: string,
-  paid: boolean,
+  mode: 'prepare' | 'quote' | 'execute',
+  quoteDrafts?: QuoteDraftStore,
 ): Promise<void> {
   try {
     const id = new URL(req.url ?? '/', 'http://localhost').searchParams.get(idParam)
     if (id === null || !ID_PATTERN.test(id)) throw new LoomApiError(400, `invalid ${idParam}`)
-    const body = await requestBody(req)
-    const filename = typeof body.filename === 'string' ? body.filename.trim() : ''
-    const content = typeof body.content === 'string' ? body.content.trim() : ''
-    if (filename === '' || content === '') throw new LoomApiError(400, 'filename and content are required')
+    const body = await requestBody(req, MAX_WORKBOOK_REQUEST_BYTES)
+    const { filename, content } = workbookPayload(body)
     const payload: Record<string, unknown> = { filename, content }
-    if (paid) {
+    const fingerprint = inputFingerprint(id, payload)
+    if (mode === 'execute') {
+      if (quoteDrafts === undefined) throw new LoomApiError(503, 'workbook quote confirmation is unavailable')
+      if (body.confirm !== true) throw new LoomApiError(403, 'workbook execution requires explicit confirmation')
+      if (typeof body.clientRequestId !== 'string' || !CLIENT_REQUEST_ID_PATTERN.test(body.clientRequestId)) {
+        throw new LoomApiError(400, 'workbook execution requires a valid clientRequestId')
+      }
+      const confirmationToken = quoteDrafts.require(body.confirmationToken, 'workbook', id, fingerprint, body.clientRequestId)
       payload.confirm = true
-      payload.clientRequestId = typeof body.clientRequestId === 'string' && CLIENT_REQUEST_ID_PATTERN.test(body.clientRequestId)
-        ? body.clientRequestId
-        : `loomloom-ui-workbook-${randomUUID()}`
+      payload.clientRequestId = body.clientRequestId
+      const response = await api.request(pathFor(id), { method: 'POST', body: JSON.stringify(payload) })
+      quoteDrafts.consume(confirmationToken)
+      sendJson(res, 200, response)
+      return
     }
-    sendJson(res, 200, await api.request(pathFor(id), { method: 'POST', body: JSON.stringify(payload) }))
+    const response = await api.request(pathFor(id), { method: 'POST', body: JSON.stringify(payload) })
+    if (mode === 'quote') {
+      if (quoteDrafts === undefined) throw new LoomApiError(503, 'workbook quote confirmation is unavailable')
+      sendJson(res, 200, withConfirmationToken(response, quoteDrafts.create('workbook', id, fingerprint)))
+      return
+    }
+    sendJson(res, 200, response)
   } catch (cause) { apiFailure(res, cause) }
 }
 
@@ -133,10 +230,17 @@ export function registerLoomRoutes(
   readAccount?: () => Promise<LoomAccount>,
 ): () => void {
   const port = ctx.webServer.port
+  const quoteDrafts = new QuoteDraftStore()
   const register = (path: string, handler: (req: IncomingMessage, res: ServerResponse) => Promise<void>) =>
     ctx.webServer.register({ kind: 'exact', path, handler })
   const requireOrigin = (req: IncomingMessage, res: ServerResponse): boolean => {
-    if (sameOrigin(req, port)) return true
+    if (!sameAuthority(req, port)) {
+      sendJson(res, 403, { error: 'loomloom request authority rejected' })
+      return false
+    }
+    if (req.method === 'GET' || req.method === 'HEAD') return true
+    const host = req.headers.host?.toLowerCase()
+    if (host !== undefined && req.headers.origin === `http://${host}`) return true
     sendJson(res, 403, { error: 'loomloom request authority rejected' })
     return false
   }
@@ -229,11 +333,12 @@ export function registerLoomRoutes(
         if (!Array.isArray(inputRows) || inputRows.length < 1 || inputRows.length > 100) {
           throw new LoomApiError(400, 'inputRows must contain 1-100 rows')
         }
-        const listingVersionId = typeof body.listingVersionId === 'string' ? body.listingVersionId : ''
-        sendJson(res, 200, await api.request(
+        const response = await api.request(
           `/marketListings/${encodeURIComponent(listingId)}:quote`,
-          { method: 'POST', body: JSON.stringify({ inputRows, listingVersionId }) },
-        ))
+          { method: 'POST', body: JSON.stringify({ inputRows }) },
+        )
+        const confirmationToken = quoteDrafts.create('rows', listingId, inputFingerprint(listingId, inputRows))
+        sendJson(res, 200, withConfirmationToken(response, confirmationToken))
       } catch (cause) { apiFailure(res, cause) }
     }),
     register(`${PREFIX}/market/skillbot/execute`, async (req, res) => {
@@ -247,17 +352,25 @@ export function registerLoomRoutes(
         if (!Array.isArray(inputRows) || inputRows.length < 1 || inputRows.length > 100) {
           throw new LoomApiError(400, 'inputRows must contain 1-100 rows')
         }
-        const clientRequestId = typeof body.clientRequestId === 'string' && CLIENT_REQUEST_ID_PATTERN.test(body.clientRequestId)
-          ? body.clientRequestId
-          : `loomloom-ui-${randomUUID()}`
-        const listingVersionId = typeof body.listingVersionId === 'string' ? body.listingVersionId : ''
-        sendJson(res, 200, await api.request(
+        if (typeof body.clientRequestId !== 'string' || !CLIENT_REQUEST_ID_PATTERN.test(body.clientRequestId)) {
+          throw new LoomApiError(400, 'execution requires a valid clientRequestId')
+        }
+        const confirmationToken = quoteDrafts.require(
+          body.confirmationToken,
+          'rows',
+          listingId,
+          inputFingerprint(listingId, inputRows),
+          body.clientRequestId,
+        )
+        const response = await api.request(
           `/marketListings/${encodeURIComponent(listingId)}:execute`,
           {
             method: 'POST',
-            body: JSON.stringify({ inputRows, listingVersionId, clientRequestId, confirm: true }),
+            body: JSON.stringify({ inputRows, clientRequestId: body.clientRequestId, confirm: true }),
           },
-        ))
+        )
+        quoteDrafts.consume(confirmationToken)
+        sendJson(res, 200, response)
       } catch (cause) { apiFailure(res, cause) }
     }),
     register(`${PREFIX}/runs`, async (req, res) => {
@@ -343,15 +456,15 @@ export function registerLoomRoutes(
     }),
     register(`${PREFIX}/market/workbook/validate`, async (req, res) => {
       if (req.method !== 'POST' || !requireOrigin(req, res)) return
-      await forwardWorkbookAction(req, res, api, ':validateWorkbook')
+      await forwardWorkbookAction(req, res, api, ':validateWorkbook', 'prepare', quoteDrafts)
     }),
     register(`${PREFIX}/market/workbook/quote`, async (req, res) => {
       if (req.method !== 'POST' || !requireOrigin(req, res)) return
-      await forwardWorkbookAction(req, res, api, ':quoteWorkbook')
+      await forwardWorkbookAction(req, res, api, ':quoteWorkbook', 'quote', quoteDrafts)
     }),
     register(`${PREFIX}/market/workbook/run`, async (req, res) => {
       if (req.method !== 'POST' || !requireOrigin(req, res)) return
-      await forwardWorkbookAction(req, res, api, ':executeWorkbook', true)
+      await forwardWorkbookAction(req, res, api, ':executeWorkbook', 'execute', quoteDrafts)
     }),
   ]
   return () => routes.forEach(dispose => dispose())

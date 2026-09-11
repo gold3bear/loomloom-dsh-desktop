@@ -108,7 +108,7 @@ export function registerLoomTools(ctx: Context, service: LoomSkillbotService): (
   const disposers = [
     ctx.tools.register(defineTool({
       name: 'loomloom_list_skillbots',
-      description: 'List every available Loomloom SkillBot by fetching the complete market dataset. An optional keyword filters the full dataset locally by title and description (case-insensitive, whitespace-separated terms all matched against it); use it to discover an appropriate SkillBot before preparing an execution.',
+      description: 'List the first page of available Loomloom SkillBots for fast browsing. When a keyword is provided, scan the bounded market dataset and match locally by title, description and id.',
       parameters: {
         keyword: { type: 'string', description: 'Optional keyword matched locally against the full dataset (listing title, description and id; case-insensitive; multiple whitespace-separated terms are ranked by how many match).' },
       },
@@ -177,7 +177,6 @@ export function registerLoomTools(ctx: Context, service: LoomSkillbotService): (
       description: 'Validate Loomloom SkillBot inputs and create a short-lived execution draft. This tool has no side effect and never starts a paid run.',
       parameters: {
         listing_id: { type: 'string', required: true, description: 'Opaque SkillBot listing id.' },
-        listing_version_id: { type: 'string', description: 'Optional opaque published version id.' },
         input_rows: { type: 'json', required: true, description: 'An array of 1-100 input objects matching the SkillBot input schema.' },
       },
       output: {
@@ -204,7 +203,6 @@ export function registerLoomTools(ctx: Context, service: LoomSkillbotService): (
         const draft = await service.prepare(
           requireAgent(exec.agent),
           asString(args.listing_id, 'listing_id'),
-          typeof args.listing_version_id === 'string' ? args.listing_version_id : undefined,
           args.input_rows,
           exec.signal,
         )
@@ -491,21 +489,38 @@ export function registerLoomTools(ctx: Context, service: LoomSkillbotService): (
             id: { type: 'string', required: true },
             status: { type: 'string' },
             reviewStatus: { type: 'string' },
+            reviewRequestId: { type: 'string' },
             name: { type: 'string' },
           },
         },
         render: (_args, value) => [{
           type: 'text',
-          text: `Published listing ${value.id}${value.name === undefined ? '' : ` (${value.name})`}${value.status === undefined ? '' : ` with status ${value.status}`}${value.reviewStatus === undefined ? '' : `; review ${value.reviewStatus}`}.`,
+          text: `Published listing ${value.id}${value.name === undefined ? '' : ` (${value.name})`}${value.status === undefined ? '' : ` with status ${value.status}`}${value.reviewStatus === undefined ? '' : `; review ${value.reviewStatus}`}${value.reviewRequestId === undefined ? '' : `; review request ${value.reviewRequestId}`}.`,
         }],
       },
       async execute(args, exec) {
         const fee = args.task_fixed_fee
         if (typeof fee !== 'number') throw new LoomApiError(400, 'task_fixed_fee is required')
+        requireAgent(exec.agent)
+        const approval = ctx.get('approval')
+        if (approval === undefined) throw new LoomApiError(503, 'DSH user approval is unavailable; publishing is blocked')
+        const displayName = asString(args.display_name, 'display_name')
+        const templateId = asString(args.template_id, 'template_id')
+        const templateVersionId = asString(args.template_version_id, 'template_version_id')
+        const listingId = typeof args.listing_id === 'string' && args.listing_id.trim() !== '' ? args.listing_id.trim() : undefined
+        const action = listingId === undefined ? 'Create a new Market listing' : `Update Market listing ${listingId}`
+        const outcome = await approval.request({
+          agent: exec.agent!,
+          toolName: 'loomloom_publish_listing',
+          callId: exec.callId,
+          reason: `${action} using template ${templateId}, version ${templateVersionId}, display name "${displayName}", and fixed fee ${fee}. This submits the change for review.`,
+          signal: exec.signal,
+        })
+        if (outcome !== 'allowed-once') throw new LoomApiError(403, 'Loomloom listing publication was not approved by the user')
         const published = await service.publishListing({
-          displayName: asString(args.display_name, 'display_name'),
-          templateId: asString(args.template_id, 'template_id'),
-          templateVersionId: asString(args.template_version_id, 'template_version_id'),
+          displayName,
+          templateId,
+          templateVersionId,
           taskFixedFee: fee,
           ...(typeof args.description === 'string' ? { description: args.description } : {}),
           ...(typeof args.listing_id === 'string' ? { listingId: args.listing_id } : {}),
@@ -514,6 +529,7 @@ export function registerLoomTools(ctx: Context, service: LoomSkillbotService): (
           id: published.id,
           ...(published.status === undefined ? {} : { status: published.status }),
           ...(published.reviewStatus === undefined ? {} : { reviewStatus: published.reviewStatus }),
+          ...(published.reviewRequestId === undefined ? {} : { reviewRequestId: published.reviewRequestId }),
           ...(published.name === undefined ? {} : { name: published.name }),
         }
       },
