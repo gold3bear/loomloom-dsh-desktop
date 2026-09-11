@@ -39,10 +39,10 @@ test('connected onboarding completes and opens the native new-session surface', 
     slots: {
       inject(_name: string, register: () => unknown): unknown { return register() },
       register(
-        options: { readonly name: string },
+        options: { readonly name: string, readonly key?: string },
         component: (props: unknown) => { readonly props: { readonly onCreateFirstChat: () => void } },
       ): () => void {
-        registrations.push(options.name)
+        registrations.push(options.key === undefined ? options.name : `${options.name}:${options.key}`)
         if (options.name === 'settings.onboarding') onboarding = component
         return () => {}
       },
@@ -61,6 +61,10 @@ test('connected onboarding completes and opens the native new-session surface', 
   assert.deepEqual(actions, ['complete', 'clear-session'])
   assert.ok(registrations.includes('sidebar.primary.navigation'))
   assert.ok(registrations.includes('main.surface'))
+  // Both result-bearing tools re-render their conversation card from the Host's
+  // structured payload.
+  assert.ok(registrations.includes('tool.call.toolview:loomloom_get_run_results'))
+  assert.ok(registrations.includes('tool.call.toolview:loomloom_execute_skillbot'))
   assert.ok(!registrations.includes('sidebar.workspaces'))
   assert.ok(!registrations.includes('conversation'))
 })

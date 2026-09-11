@@ -41,7 +41,10 @@ run_gate() {
 
 run_gate "typecheck (tsconfig.json)" "$tsc_bin" -p tsconfig.json --noEmit
 run_gate "typecheck (tsconfig.client.json)" "$tsc_bin" -p tsconfig.client.json --noEmit
-run_gate "tests" node --import tsx --test 'tests/**/*.spec.ts'
+# The CSS loader stub lets the suite import the real client plugin graph, whose
+# shared UI atoms import stylesheets that only a browser build resolves; the
+# tests tsconfig supplies the JSX transform tsx reads from a single config.
+run_gate "tests" env TSX_TSCONFIG_PATH=tsconfig.tests.json node --import tsx --import ./tests/register-css.mjs --test 'tests/**/*.spec.ts'
 run_gate "api surface verification" node --import tsx scripts/verify-loomloom-apis.ts
 
 echo

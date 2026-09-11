@@ -34,6 +34,7 @@ export type LoomloomLocaleKey =
   | 'connectionStatusFailed'
   | 'modelSelectionRequired'
   | 'openModels'
+  | 'modelSelectionLater'
   | 'loomReady'
   | 'chatModelReady'
   | 'connectedHint'
@@ -101,6 +102,45 @@ export type LoomloomLocaleKey =
   | 'credentialUnavailable'
   | 'sendFailed'
   | 'preparingCall'
+  | 'marketSubtitle'
+  | 'marketSearchPlaceholder'
+  | 'marketSearchLabel'
+  | 'marketSearchEmpty'
+  | 'marketCount'
+  | 'marketInputs'
+  | 'marketUpdated'
+  | 'marketCreator'
+  | 'previewInputsShort'
+  | 'previewStepsTitle'
+  | 'previewStepRead'
+  | 'previewStepQuote'
+  | 'previewStepApprove'
+  | 'previewStepResult'
+  | 'previewFeeBarTitle'
+  | 'previewFeeBarNote'
+  | 'dropzoneTitle'
+  | 'dropzoneHint'
+  | 'dropzoneChosen'
+  | 'runCardTitle'
+  | 'runStatusRunning'
+  | 'runStatsRows'
+  | 'runCompleted'
+  | 'runFailed'
+  | 'runArtifacts'
+  | 'runNoArtifacts'
+  | 'runDownload'
+  | 'runCopyId'
+  | 'runCopied'
+  | 'runTruncated'
+  | 'runOmittedArtifacts'
+  | 'runShownRows'
+  | 'runOmittedColumns'
+  | 'runShowAll'
+  | 'runShowLess'
+  | 'runEmptyPayload'
+  | 'markdownCopy'
+  | 'markdownCopied'
+  | 'markdownFootnotes'
 
 export const zh: Record<LoomloomLocaleKey, string> = {
   tab: 'Loomloom',
@@ -138,6 +178,7 @@ export const zh: Record<LoomloomLocaleKey, string> = {
   connectionStatusFailed: '无法确认胜算云连接状态，请重试。',
   modelSelectionRequired: '凭据已验证。请选择一个可用的胜算云聊天模型后再完成连接。',
   openModels: '打开模型设置',
+  modelSelectionLater: '稍后设置',
   loomReady: 'Loomloom 可用',
   chatModelReady: '聊天模型可用',
   connectedHint: '胜算云已连接，可以开始聊天。',
@@ -213,6 +254,45 @@ export const zh: Record<LoomloomLocaleKey, string> = {
   credentialUnavailable: '无法确认胜算云授权状态，请重试。',
   sendFailed: '未能在对话中发起调用。',
   preparingCall: '正在发起…',
+  marketSubtitle: '每位创作者的一方 SkillBot 工作站：在这里填好输入项，调用与结果都发生在 DSH 对话里。',
+  marketSearchPlaceholder: '搜索名称或简介…',
+  marketSearchLabel: '搜索 SkillBot',
+  marketSearchEmpty: '没有匹配的 SkillBot。',
+  marketCount: '共 {count} 个可用 SkillBot',
+  marketInputs: '输入项 {count} 项',
+  marketUpdated: '更新于 {date}',
+  marketCreator: '创作者 {name}',
+  previewInputsShort: '输入项',
+  previewStepsTitle: '提交后会发生什么',
+  previewStepRead: '先读取并校验公开输入字段',
+  previewStepQuote: '生成执行草稿并给出预估费用',
+  previewStepApprove: '费用需你确认后才执行',
+  previewStepResult: '运行结果回到这个新会话里',
+  previewFeeBarTitle: '本次调用费用',
+  previewFeeBarNote: '费用由服务端在执行前确认，未执行不产生费用。',
+  dropzoneTitle: '点击选择文件上传',
+  dropzoneHint: '支持 {types}',
+  dropzoneChosen: '已上传',
+  runCardTitle: 'SkillBot 运行结果',
+  runStatusRunning: '正在运行',
+  runStatsRows: '总行数',
+  runCompleted: '已完成',
+  runFailed: '失败',
+  runArtifacts: '输出产物',
+  runNoArtifacts: '本次运行没有输出产物。',
+  runDownload: '下载',
+  runCopyId: '复制运行 ID',
+  runCopied: '已复制',
+  runTruncated: '内容已截断',
+  runOmittedArtifacts: '另有 {count} 个产物未展示',
+  runShownRows: '显示 {shown} / {total} 行',
+  runOmittedColumns: '省略 {count} 列',
+  runShowAll: '展开全部 {count} 行',
+  runShowLess: '收起',
+  runEmptyPayload: '该产物没有可展示的内容。',
+  markdownCopy: '复制',
+  markdownCopied: '已复制',
+  markdownFootnotes: '脚注',
 }
 
 export const en: Record<LoomloomLocaleKey, string> = {
@@ -251,6 +331,7 @@ export const en: Record<LoomloomLocaleKey, string> = {
   connectionStatusFailed: 'The ShengSuanYun connection could not be verified. Please try again.',
   modelSelectionRequired: 'The credential is verified. Select an available ShengSuanYun chat model to finish connecting.',
   openModels: 'Open model settings',
+  modelSelectionLater: 'Set up later',
   loomReady: 'Loomloom available',
   chatModelReady: 'Chat model available',
   connectedHint: 'ShengSuanYun is connected and ready for chat.',
@@ -326,4 +407,43 @@ export const en: Record<LoomloomLocaleKey, string> = {
   credentialUnavailable: 'The ShengSuanYun connection could not be confirmed. Please try again.',
   sendFailed: 'The call could not be started in the conversation.',
   preparingCall: 'Starting…',
+  marketSubtitle: 'One creator’s SkillBot workstation: prepare the inputs here; the call and its result happen in the DSH conversation.',
+  marketSearchPlaceholder: 'Search name or description…',
+  marketSearchLabel: 'Search SkillBots',
+  marketSearchEmpty: 'No SkillBot matches this search.',
+  marketCount: '{count} SkillBot(s) available',
+  marketInputs: '{count} input(s)',
+  marketUpdated: 'Updated {date}',
+  marketCreator: 'By {name}',
+  previewInputsShort: 'Inputs',
+  previewStepsTitle: 'What happens after you submit',
+  previewStepRead: 'The public input fields are read and validated first',
+  previewStepQuote: 'A draft is created and the estimated fee is quoted',
+  previewStepApprove: 'Nothing runs until you approve that fee',
+  previewStepResult: 'The run result lands back in the new conversation',
+  previewFeeBarTitle: 'Cost of this call',
+  previewFeeBarNote: 'The server confirms the fee before execution; a call that never runs is not charged.',
+  dropzoneTitle: 'Click to choose a file',
+  dropzoneHint: 'Accepts {types}',
+  dropzoneChosen: 'Uploaded',
+  runCardTitle: 'SkillBot run result',
+  runStatusRunning: 'Running',
+  runStatsRows: 'Rows',
+  runCompleted: 'Completed',
+  runFailed: 'Failed',
+  runArtifacts: 'Output artifacts',
+  runNoArtifacts: 'This run produced no output artifacts.',
+  runDownload: 'Download',
+  runCopyId: 'Copy run id',
+  runCopied: 'Copied',
+  runTruncated: 'Content truncated',
+  runOmittedArtifacts: '{count} more artifact(s) not shown',
+  runShownRows: 'Showing {shown} of {total} rows',
+  runOmittedColumns: '{count} more column(s) omitted',
+  runShowAll: 'Show all {count} rows',
+  runShowLess: 'Show less',
+  runEmptyPayload: 'This artifact has no displayable content.',
+  markdownCopy: 'Copy',
+  markdownCopied: 'Copied',
+  markdownFootnotes: 'Footnotes',
 }
