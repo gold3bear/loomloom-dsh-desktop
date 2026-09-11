@@ -21,10 +21,10 @@
 
 1. 完成 API client 的 HTTP 超时、AbortSignal、429/5xx 有界重试和错误码归一化。
 2. 将当前市场目录区分为“公开预览 token”和“当前用户执行 token”，避免把目录权限误用到执行。
-3. 补充请求体 schema：`inputRows` 最大行数、单元格深度/长度、listingVersionId 和 clientRequestId 格式。
+3. 补充请求体 schema：`inputRows` 最大行数、公开字段边界、单元格深度/长度和 clientRequestId 格式。Market Listing Version 始终由服务端在创建订单时选择并锁定。
 4. 为 route 处理器增加真实 DSH Web Server 集成测试，而不只测试纯函数。
 
-**完成标准**：市场、runs、单 run 和执行 API 均通过 mock 上游测试；Token 不出现在响应、日志和断言快照中。市场执行必须先取得 quote，再通过 DSH approval；浏览器直连 execute 路由在具备等价确认能力前不暴露。
+**完成标准**：市场、runs、单 run 和执行 API 均通过 mock 上游测试；Token 不出现在响应、日志和断言快照中。市场执行必须先取得 quote，再通过 DSH approval；浏览器执行使用 Host 签发的短时一次性确认令牌，绑定 listing、输入哈希和 clientRequestId。
 
 ## Phase 2 — 旧授权链路验收、凭据与 OAuth
 

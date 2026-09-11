@@ -69,8 +69,10 @@ export function createLoomBootstrapReader(
       }
     }
 
-    const loomReady = await availability(signal => verifyLoomCredential(token, config, signal))
-    const modelIds = await availableModels(signal => verifyShengsuanyunRouterCredential(token, signal))
+    const [loomReady, modelIds] = await Promise.all([
+      availability(signal => verifyLoomCredential(token, config, signal)),
+      availableModels(signal => verifyShengsuanyunRouterCredential(token, signal)),
+    ])
     const selection = (ctx.get('agentDefaultModel') as AgentDefaultModelService | undefined)?.currentSelection()
     const selectedModel = selection?.provider === SHENGSUANYUN_PROVIDER ? selection.model : undefined
     const modelReady = modelIds !== undefined

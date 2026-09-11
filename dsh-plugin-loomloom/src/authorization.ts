@@ -2,14 +2,21 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-authorization'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { beginBrowserAuthorization, verifyBrowserCredential } from './browser-auth.js'
-import { clearLoomToken, LOOMLOOM_CREDENTIAL_KEY, storeLoomToken } from './credentials.js'
+import { clearLoomToken, LOOMLOOM_CREDENTIAL_KEY, replaceLoomIdentityToken, storeLoomToken } from './credentials.js'
 import { selectShengsuanyunDefaultModel, SHENGSUANYUN_DEFAULT_MODEL } from './default-model.js'
 import type { ResolvedLoomConfig } from './loom-api.js'
 
-async function verifyAndStore(ctx: Context, config: ResolvedLoomConfig, token: string, signal: AbortSignal): Promise<void> {
+async function verifyAndStore(
+  ctx: Context,
+  config: ResolvedLoomConfig,
+  token: string,
+  signal: AbortSignal,
+  identityToken?: string,
+): Promise<void> {
   const modelIds = await verifyBrowserCredential(token, config, signal)
   const previous = await ctx.credentials.resolve(credentialRef(config.tokenRef))
   await storeLoomToken(ctx, config, token)
+  await replaceLoomIdentityToken(ctx, identityToken)
   if (!modelIds.includes(SHENGSUANYUN_DEFAULT_MODEL)) return
   try {
     await selectShengsuanyunDefaultModel(ctx)
@@ -37,8 +44,8 @@ export function registerLoomAuthorization(ctx: Context, config: ResolvedLoomConf
       if (session.method === 'browser') {
         const browser = await beginBrowserAuthorization(session.signal)
         session.notify({ message: '请在浏览器中完成胜算云授权；DSH 会在回环回调后验证并安全保存凭据。', url: browser.url })
-        const token = await browser.result
-        await verifyAndStore(ctx, config, token, session.signal)
+        const credential = await browser.result
+        await verifyAndStore(ctx, config, credential.apiKey, session.signal, credential.identityToken)
         return
       }
       if (session.method !== 'api-token') throw new Error('不支持的 Loomloom 授权方式')

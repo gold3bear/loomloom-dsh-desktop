@@ -2,6 +2,7 @@ import { LoomApiError, type LoomApi } from './loom-api.js'
 
 const ACCOUNT_API_URL = 'https://api.shengsuanyun.com/user/info'
 const MAX_ACCOUNT_RESPONSE_BYTES = 256 * 1024
+const ACCOUNT_TIMEOUT_MS = 10_000
 
 export interface LoomAccount {
   readonly configured: boolean
@@ -32,10 +33,39 @@ function scalarText(value: unknown): string | undefined {
   return text(value)
 }
 
+const IDENTITY_FIELDS = [
+  'uid', 'id', 'userId', 'ID', 'UserID',
+  'displayName', 'display_name', 'name',
+  'Nickname', 'NickName', 'nickname', 'nickName', 'nick_name',
+  'Username', 'UserName', 'username', 'userName', 'user_name',
+] as const
+
+const IDENTITY_ENVELOPES = [
+  'data', 'Data', 'user', 'User', 'userInfo', 'UserInfo', 'userinfo',
+  'profile', 'Profile', 'account', 'Account', 'result', 'Result',
+] as const
+
+function isIdentityRecord(value: JsonRecord): boolean {
+  return IDENTITY_FIELDS.some(field => field in value)
+}
+
+/**
+ * The ShengSuanYun account endpoint has several deployed envelope variants.
+ * We traverse only recognized envelope names and return a record only when it
+ * contains an approved identity field; arbitrary upstream data never escapes.
+ */
 function userRecord(payload: unknown): JsonRecord {
-  const root = record(payload)
-  const data = record(root.data)
-  return record(root.user ?? data.user ?? data)
+  const queue: unknown[] = [payload]
+  const visited = new Set<object>()
+  while (queue.length > 0) {
+    const candidate = queue.shift()
+    if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate) || visited.has(candidate)) continue
+    visited.add(candidate)
+    const current = candidate as JsonRecord
+    if (isIdentityRecord(current)) return current
+    for (const key of IDENTITY_ENVELOPES) queue.push(current[key])
+  }
+  return {}
 }
 
 function listingItems(payload: unknown): readonly unknown[] {
@@ -59,10 +89,16 @@ function normalizeAccount(payload: unknown, isCreator?: boolean): LoomAccount {
     balance?: string
     isCreator?: boolean
   } = { configured: true }
-  const uid = text(user.uid ?? user.id ?? user.userId)
-  const displayName = text(user.displayName ?? user.display_name ?? user.name)
-  const email = text(user.email ?? user.mail)
-  const photoUrl = text(user.photoUrl ?? user.photo_url ?? user.avatar ?? user.avatarUrl)
+  // `/user/info` predates the Loom API and uses PascalCase fields for many
+  // accounts. Keep the same display precedence as the legacy desktop client.
+  const uid = text(user.uid ?? user.id ?? user.userId ?? user.ID ?? user.UserID)
+  const displayName = text(
+    user.displayName ?? user.display_name ?? user.name
+      ?? user.Nickname ?? user.NickName ?? user.nickname ?? user.nickName ?? user.nick_name
+      ?? user.Username ?? user.UserName ?? user.username ?? user.userName ?? user.user_name,
+  )
+  const email = text(user.email ?? user.mail ?? user.Email)
+  const photoUrl = text(user.photoUrl ?? user.photo_url ?? user.avatar ?? user.avatarUrl ?? user.HeadImg)
   const balance = scalarText(user.balance ?? user.balanceAmount ?? user.availableBalance)
   if (uid !== undefined) account.uid = uid
   if (displayName !== undefined) account.displayName = displayName
@@ -79,6 +115,29 @@ function optionalRoleFailure(cause: unknown): boolean {
     && ((cause as LoomApiError).status === 401 || (cause as LoomApiError).status === 403 || (cause as LoomApiError).status === 404)
 }
 
+async function boundedAccountBody(response: Response): Promise<string> {
+  const declared = Number(response.headers.get('content-length') ?? Number.NaN)
+  if (Number.isFinite(declared) && declared > MAX_ACCOUNT_RESPONSE_BYTES) {
+    await response.body?.cancel()
+    throw new Error('loomloom account response exceeded size limit')
+  }
+  const reader = response.body?.getReader()
+  if (reader === undefined) return ''
+  const chunks: Uint8Array[] = []
+  let size = 0
+  while (true) {
+    const next = await reader.read()
+    if (next.done) break
+    size += next.value.byteLength
+    if (size > MAX_ACCOUNT_RESPONSE_BYTES) {
+      await reader.cancel()
+      throw new Error('loomloom account response exceeded size limit')
+    }
+    chunks.push(next.value)
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks))
+}
+
 /**
  * Reads only the user fields needed by the identity surface. The raw user
  * payload and credential remain in Host memory.
@@ -90,18 +149,29 @@ export function createLoomAccountReader(api: LoomApi): () => Promise<LoomAccount
 export function createLoomAccountReaderWithToken(
   api: LoomApi,
   resolveToken: () => Promise<string | undefined>,
+  resolveIdentityToken: () => Promise<string | undefined> = resolveToken,
 ): () => Promise<LoomAccount> {
   return async () => {
-    const token = await resolveToken()
-    if (token === undefined || token.trim() === '') throw new Error('loomloom account is not configured')
-    const response = await fetch(ACCOUNT_API_URL, {
+    const token = await resolveIdentityToken()
+    // A browser grant may contain only the shared API key. Keep the connection
+    // usable and let the Client render its masked-key identity fallback rather
+    // than treating missing profile JWT data as a logged-out state.
+    if (token === undefined || token.trim() === '') return { configured: true }
+    const responsePromise = fetch(ACCOUNT_API_URL, {
       headers: {
         accept: 'application/json',
         'x-token': token.trim(),
       },
+      signal: AbortSignal.timeout(ACCOUNT_TIMEOUT_MS),
     })
-    const body = await response.text()
-    if (body.length > MAX_ACCOUNT_RESPONSE_BYTES) throw new Error('loomloom account response exceeded size limit')
+    const creatorPromise = api.request('/creators/me/marketListings?pageSize=1')
+      .then(payload => listingItems(payload).length > 0)
+      .catch(cause => {
+        if (optionalRoleFailure(cause)) return false
+        return undefined
+      })
+    const response = await responsePromise
+    const body = await boundedAccountBody(response)
     if (!response.ok) {
       throw new LoomApiError(response.status, 'loomloom account is unavailable')
     }
@@ -111,13 +181,11 @@ export function createLoomAccountReaderWithToken(
     } catch {
       throw new Error('loomloom account returned invalid JSON')
     }
-    let isCreator: boolean | undefined
-    try {
-      isCreator = listingItems(await api.request('/creators/me/marketListings?pageSize=1')).length > 0
-    } catch (cause) {
-      if (!optionalRoleFailure(cause)) isCreator = undefined
-      else isCreator = false
+    const envelope = record(userPayload)
+    if (typeof envelope.code === 'number' && envelope.code !== 0) {
+      throw new LoomApiError(401, 'loomloom account identity is unavailable')
     }
+    const isCreator = await creatorPromise
     return normalizeAccount(userPayload, isCreator)
   }
 }

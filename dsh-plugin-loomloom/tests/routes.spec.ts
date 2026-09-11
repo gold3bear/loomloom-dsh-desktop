@@ -4,7 +4,10 @@ import type { AddressInfo } from 'node:net'
 import test from 'node:test'
 import type { Context } from '@deepseek-ai/cordis'
 import { registerLoomRoutes } from '../src/routes.js'
+import { LoomApiError } from '../src/loom-api.js'
 import type { LoomBrowserLoginService } from '../src/browser-login.js'
+import type { StorefrontCache } from '../src/storefront-cache.js'
+import type { StorefrontSource } from '../src/storefront.js'
 
 type Handler = (req: IncomingMessage, res: ServerResponse) => Promise<void>
 
@@ -18,9 +21,12 @@ async function startServer(options: {
   readonly credentialStatus?: () => Promise<unknown>
   readonly clearCredential?: () => Promise<void>
   readonly apiResponse?: unknown
+  readonly binaryResponse?: unknown
   readonly browserLogin?: Pick<LoomBrowserLoginService, 'start' | 'status' | 'cancel'>
   readonly bootstrap?: () => Promise<unknown>
   readonly account?: () => Promise<unknown>
+  readonly storefront?: StorefrontCache
+  readonly storefrontSource?: StorefrontSource
 } = {}): Promise<TestServer> {
   const routes = new Map<string, Handler>()
   const calls: { path: string, init?: RequestInit }[] = []
@@ -49,12 +55,24 @@ async function startServer(options: {
       calls.push({ path, ...(init === undefined ? {} : { init }) })
       return options.apiResponse ?? { id: 'listing-1', displayName: 'Safe SkillBot' }
     },
+    async requestBinary(path: string, init?: RequestInit): Promise<unknown> {
+      calls.push({ path, ...(init === undefined ? {} : { init }) })
+      return options.binaryResponse ?? {
+        base64: Buffer.from('workbook-bytes').toString('base64'),
+        byteLength: 14,
+        contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        filename: 'input.xlsx',
+      }
+    },
   } as never,
   options.credentialStatus as (() => Promise<never>) ?? (async () => ({ configured: false })),
   options.browserLogin as LoomBrowserLoginService | undefined,
   options.clearCredential,
   options.bootstrap as (() => Promise<never>) | undefined,
-  options.account as (() => Promise<never>) | undefined)
+  options.account as (() => Promise<never>) | undefined,
+  options.storefront === undefined
+    ? {}
+    : { storefront: options.storefront, ...(options.storefrontSource === undefined ? {} : { storefrontSource: options.storefrontSource }) })
   return {
     port,
     calls,
@@ -65,16 +83,29 @@ async function startServer(options: {
   }
 }
 
-async function read(server: TestServer, path: string, headers: Record<string, string> = {}, method = 'GET'): Promise<{ readonly status: number, readonly body: unknown, readonly headers: IncomingMessage['headers'] }> {
+async function readRaw(server: TestServer, path: string, headers: Record<string, string> = {}, method = 'GET', body?: string): Promise<{ readonly status: number, readonly raw: Buffer, readonly headers: IncomingMessage['headers'] }> {
   return await new Promise((resolve, reject) => {
-    const req = request({ hostname: '127.0.0.1', port: server.port, path, headers, method }, res => {
+    const requestHeaders = { ...headers }
+    if (method !== 'GET' && requestHeaders.origin === undefined && requestHeaders.host !== undefined) {
+      requestHeaders.origin = `http://${requestHeaders.host}`
+    }
+    const req = request({ hostname: '127.0.0.1', port: server.port, path, headers: requestHeaders, method }, res => {
       const chunks: Buffer[] = []
       res.on('data', chunk => chunks.push(Buffer.from(chunk)))
-      res.on('end', () => resolve({ status: res.statusCode ?? 0, body: JSON.parse(Buffer.concat(chunks).toString('utf8')), headers: res.headers }))
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, raw: Buffer.concat(chunks), headers: res.headers }))
     })
     req.once('error', reject)
+    if (body !== undefined) req.write(body)
     req.end()
   })
+}
+
+async function read(server: TestServer, path: string, headers: Record<string, string> = {}, method = 'GET', body?: string): Promise<{ readonly status: number, readonly body: unknown, readonly headers: IncomingMessage['headers'] }> {
+  const result = await readRaw(server, path, headers, method, body)
+  const text = result.raw.toString('utf8')
+  let parsed: unknown = null
+  try { parsed = text === '' ? null : JSON.parse(text) } catch { parsed = text }
+  return { status: result.status, body: parsed, headers: result.headers }
 }
 
 test('Host routes require the DSH loopback authority before reading credentials or market data', async () => {
@@ -83,6 +114,32 @@ test('Host routes require the DSH loopback authority before reading credentials 
     const result = await read(server, '/api/loomloom/credentials', { host: `evil.example:${server.port}` })
     assert.equal(result.status, 403)
     assert.deepEqual(result.body, { error: 'loomloom request authority rejected' })
+    assert.equal(server.calls.length, 0)
+  } finally { await server.close() }
+})
+
+test('Host mutation routes reject cross-origin and non-JSON browser requests', async () => {
+  const server = await startServer()
+  const host = `127.0.0.1:${server.port}`
+  try {
+    const crossOrigin = await read(
+      server,
+      '/api/loomloom/market/skillbot/execute?listingId=listing-1',
+      { host, origin: 'https://evil.example', 'content-type': 'text/plain' },
+      'POST',
+      JSON.stringify({ inputRows: [{ topic: 'Coffee' }], confirm: true, clientRequestId: 'request-123' }),
+    )
+    assert.equal(crossOrigin.status, 403)
+    assert.equal(server.calls.length, 0)
+
+    const wrongType = await read(
+      server,
+      '/api/loomloom/market/skillbot/quote?listingId=listing-1',
+      { host, 'content-type': 'text/plain' },
+      'POST',
+      JSON.stringify({ inputRows: [{ topic: 'Coffee' }] }),
+    )
+    assert.equal(wrongType.status, 415)
     assert.equal(server.calls.length, 0)
   } finally { await server.close() }
 })
@@ -206,6 +263,19 @@ test('credential route returns presence only and turns backend failures into a g
   } finally { await server.close() }
 })
 
+test('credential presence is answered locally so the market list never waits on readiness probes', async () => {
+  // The market page gates on this route precisely because it is a local read:
+  // the verified `/bootstrap` route fans out to the Loom API and the Router
+  // model catalog, which must stay off the list's critical path.
+  const server = await startServer({ credentialStatus: async () => ({ configured: true, source: 'reference' }) })
+  try {
+    const result = await read(server, '/api/loomloom/credentials', { host: `127.0.0.1:${server.port}` })
+    assert.equal(result.status, 200)
+    assert.deepEqual(result.body, { configured: true, source: 'reference' })
+    assert.deepEqual(server.calls, [])
+  } finally { await server.close() }
+})
+
 test('logout route is loopback-only and returns no secret material', async () => {
   let cleared = 0
   const server = await startServer({ clearCredential: async () => { cleared += 1 } })
@@ -243,14 +313,379 @@ test('market list reads the public SkillBot catalog instead of creator-owned lis
   } finally { await server.close() }
 })
 
-test('market quote and execute routes enforce bounded rows and explicit confirmation', async () => {
-  const server = await startServer({ apiResponse: { runId: 'run-1', status: 'queued' } })
+test('market list forwards bounded pagination parameters', async () => {
+  const server = await startServer({ apiResponse: { items: [] } })
   try {
-    const quote = await read(server, '/api/loomloom/market/skillbot/quote?listingId=listing-1', { host: `127.0.0.1:${server.port}`, 'content-type': 'application/json' }, 'POST')
-    assert.equal(quote.status, 400)
-    const execute = await read(server, '/api/loomloom/market/skillbot/execute?listingId=listing-1', { host: `127.0.0.1:${server.port}`, 'content-type': 'application/json' }, 'POST')
-    assert.equal(execute.status, 400)
+    const result = await read(server, '/api/loomloom/market?pageSize=30&pageToken=opaque-next&keyword=writer', { host: `127.0.0.1:${server.port}` })
+    assert.equal(result.status, 200)
+    assert.deepEqual(server.calls, [{ path: '/marketListings?pageSize=30&pageToken=opaque-next&keyword=writer' }])
+  } finally { await server.close() }
+})
+
+test('market quote and execute routes enforce bounded rows and explicit confirmation', async () => {
+  const server = await startServer({ apiResponse: { estimatedBuyerPayable: { amount: '1.5', currency: 'CNY' } } })
+  const host = `127.0.0.1:${server.port}`
+  try {
+    const quote = await read(
+      server,
+      '/api/loomloom/market/skillbot/quote?listingId=listing-1',
+      { host, 'content-type': 'application/json' },
+      'POST',
+      JSON.stringify({ inputRows: [{ topic: 'Coffee' }] }),
+    )
+    assert.equal(quote.status, 200)
+    const confirmationToken = String((quote.body as Record<string, unknown>).confirmationToken)
+    assert.match(confirmationToken, /^[A-Za-z0-9-]{36}$/u)
+    const quoteBody = JSON.parse(String(server.calls[0]?.init?.body)) as Record<string, unknown>
+    assert.deepEqual(quoteBody, { inputRows: [{ topic: 'Coffee' }] })
+
+    const changed = await read(
+      server,
+      '/api/loomloom/market/skillbot/execute?listingId=listing-1',
+      { host, 'content-type': 'application/json' },
+      'POST',
+      JSON.stringify({
+        inputRows: [{ topic: 'Changed' }], confirm: true, clientRequestId: 'request-123', confirmationToken,
+      }),
+    )
+    assert.equal(changed.status, 403)
+    assert.equal(server.calls.length, 1)
+
+    const execute = await read(
+      server,
+      '/api/loomloom/market/skillbot/execute?listingId=listing-1',
+      { host, 'content-type': 'application/json' },
+      'POST',
+      JSON.stringify({
+        inputRows: [{ topic: 'Coffee' }], confirm: true, clientRequestId: 'request-123', confirmationToken,
+      }),
+    )
+    assert.equal(execute.status, 200)
+    assert.equal(server.calls.length, 2)
+
+    const replay = await read(
+      server,
+      '/api/loomloom/market/skillbot/execute?listingId=listing-1',
+      { host, 'content-type': 'application/json' },
+      'POST',
+      JSON.stringify({
+        inputRows: [{ topic: 'Coffee' }], confirm: true, clientRequestId: 'request-123', confirmationToken,
+      }),
+    )
+    assert.equal(replay.status, 403)
+    assert.equal(server.calls.length, 2)
   } finally {
     await server.close()
   }
+})
+
+test('the storefront route serves anonymous browsers and never reads a credential', async () => {
+  const snapshot = {
+    entries: [{
+      id: 'listing-1',
+      name: '视觉演示生成器',
+      description: '一句话主题 → 可编辑 HTML 演示文稿。',
+      available: true,
+      version: 'v1',
+      updatedAt: '2026-09-10T03:20:53Z',
+      inputSchemaSnapshot: '{"fields":[]}',
+    }],
+    unavailable: ['gone'],
+    fetchedAt: '2026-09-10T04:00:00Z',
+    stale: false,
+  }
+  const forces: boolean[] = []
+  const storefront = {
+    async read(force = false) { forces.push(force); return snapshot },
+  } as StorefrontCache
+  let credentialReads = 0
+  const server = await startServer({
+    storefront,
+    credentialStatus: async () => { credentialReads += 1; return { configured: false } },
+  })
+  try {
+    const result = await read(server, '/api/loomloom/storefront', { host: `127.0.0.1:${server.port}` })
+    assert.equal(result.status, 200)
+    assert.deepEqual(result.body, { ...snapshot, source: 'none' })
+    assert.equal(credentialReads, 0)
+    assert.deepEqual(server.calls, [])
+    assert.deepEqual(forces, [false])
+    assert.equal(result.headers['cache-control'], 'no-store')
+  } finally { await server.close() }
+})
+
+test('the storefront route reports which source is live so a missing creator key is visible', async () => {
+  const storefront = {
+    async read() { return { configured: false, entries: [], unavailable: [], fetchedAt: '2026-09-10T04:00:00Z', stale: false } },
+  } as StorefrontCache
+  const server = await startServer({ storefront, storefrontSource: 'creator-key-missing' })
+  try {
+    const result = await read(server, '/api/loomloom/storefront', { host: `127.0.0.1:${server.port}` })
+    assert.equal(result.status, 200)
+    assert.equal((result.body as { source?: string }).source, 'creator-key-missing')
+  } finally { await server.close() }
+})
+
+test('the storefront refresh control asks the cache to bypass its lifetime', async () => {
+  const forces: boolean[] = []
+  const storefront = {
+    async read(force = false) {
+      forces.push(force)
+      return { entries: [], unavailable: [], fetchedAt: '2026-09-10T04:00:00Z', stale: false }
+    },
+  } as StorefrontCache
+  const server = await startServer({ storefront })
+  try {
+    const result = await read(server, '/api/loomloom/storefront?refresh=1', { host: `127.0.0.1:${server.port}` })
+    assert.equal(result.status, 200)
+    assert.deepEqual(forces, [true])
+  } finally { await server.close() }
+})
+
+test('the storefront route is loopback-only and reports an unwired storefront', async () => {
+  const storefront = {
+    async read() { return { entries: [], unavailable: [], fetchedAt: '2026-09-10T04:00:00Z', stale: false } },
+  } as StorefrontCache
+  const server = await startServer({ storefront })
+  try {
+    const rejected = await read(server, '/api/loomloom/storefront', { host: `evil.example:${server.port}` })
+    assert.equal(rejected.status, 403)
+  } finally { await server.close() }
+
+  const bare = await startServer()
+  try {
+    const missing = await read(bare, '/api/loomloom/storefront', { host: `127.0.0.1:${bare.port}` })
+    assert.equal(missing.status, 503)
+    assert.deepEqual(missing.body, { error: 'loomloom storefront is unavailable' })
+  } finally { await bare.close() }
+})
+
+test('balance, creator and template read routes forward to the matching upstream endpoints', async () => {
+  const server = await startServer({ apiResponse: { items: [] } })
+  const host = `127.0.0.1:${server.port}`
+  try {
+    const balance = await read(server, '/api/loomloom/balance', { host })
+    assert.equal(balance.status, 200)
+    const listings = await read(server, '/api/loomloom/creator/listings', { host })
+    assert.equal(listings.status, 200)
+    const transactions = await read(server, '/api/loomloom/creator/transactions', { host })
+    assert.equal(transactions.status, 200)
+    const earnings = await read(server, '/api/loomloom/creator/earnings?pageSize=25', { host })
+    assert.equal(earnings.status, 200)
+    const templates = await read(server, '/api/loomloom/templates', { host })
+    assert.equal(templates.status, 200)
+    const schema = await read(server, '/api/loomloom/templates/schema?templateId=official-1', { host })
+    assert.equal(schema.status, 200)
+    assert.deepEqual(server.calls.map(call => call.path), [
+      '/users/me/balance',
+      '/creators/me/marketListings?pageSize=100',
+      '/creators/me/marketTransactions?pageSize=100',
+      '/creators/me/earnings?pageSize=25',
+      '/officialTemplates',
+      '/officialTemplates/official-1/schema',
+    ])
+  } finally { await server.close() }
+})
+
+test('creator and template routes reject malformed ids before any upstream call', async () => {
+  const server = await startServer()
+  const host = `127.0.0.1:${server.port}`
+  try {
+    const schema = await read(server, '/api/loomloom/templates/schema?templateId=../../secret', { host })
+    assert.equal(schema.status, 400)
+    const workbook = await read(server, '/api/loomloom/market/workbook?listingId=../../secret', { host })
+    assert.equal(workbook.status, 400)
+    const earnings = await read(server, '/api/loomloom/creator/earnings?pageSize=abc', { host })
+    assert.equal(earnings.status, 400)
+    assert.equal(server.calls.length, 0)
+  } finally { await server.close() }
+})
+
+test('workbook download streams the binary back with an attachment filename', async () => {
+  const server = await startServer()
+  const host = `127.0.0.1:${server.port}`
+  try {
+    const result = await readRaw(server, '/api/loomloom/market/workbook?listingId=listing-1', { host })
+    assert.equal(result.status, 200)
+    assert.equal(result.raw.toString('utf8'), 'workbook-bytes')
+    assert.match(String(result.headers['content-disposition']), /input\.xlsx/)
+    assert.deepEqual(server.calls, [{ path: '/marketListings/listing-1/workbook' }])
+  } finally { await server.close() }
+})
+
+test('orchestration input upload base64 encodes the JSONL content', async () => {
+  const server = await startServer({ apiResponse: { inputFileId: 'input-1', rowCount: 2 } })
+  const host = `127.0.0.1:${server.port}`
+  try {
+    const result = await read(
+      server,
+      '/api/loomloom/orchestration-input',
+      { host, 'content-type': 'application/json' },
+      'POST',
+      JSON.stringify({ filename: 'rows.jsonl', content: '{"a":1}\n{"a":2}\n' }),
+    )
+    assert.equal(result.status, 200)
+    const call = server.calls[0]!
+    assert.equal(call.path, '/orchestrationInputs:upload')
+    const body = JSON.parse(String(call.init?.body)) as Record<string, unknown>
+    assert.equal(body.filename, 'rows.jsonl')
+    assert.equal(Buffer.from(String(body.content), 'base64').toString('utf8'), '{"a":1}\n{"a":2}\n')
+  } finally { await server.close() }
+})
+
+test('workbook run forwards only an explicit confirmation and stable client request id', async () => {
+  const server = await startServer({ apiResponse: { runId: 'run-1' } })
+  const host = `127.0.0.1:${server.port}`
+  try {
+    const quote = await read(
+      server,
+      '/api/loomloom/market/workbook/quote?listingId=listing-1',
+      { host, 'content-type': 'application/json' },
+      'POST',
+      JSON.stringify({ filename: 'filled.xlsx', content: 'ZmlsbGVk' }),
+    )
+    assert.equal(quote.status, 200)
+    const confirmationToken = String((quote.body as Record<string, unknown>).confirmationToken)
+
+    const missing = await read(server, '/api/loomloom/market/workbook/run?listingId=listing-1', { host, 'content-type': 'application/json' }, 'POST', JSON.stringify({}))
+    assert.equal(missing.status, 400)
+    assert.equal(server.calls.length, 1)
+
+    const unconfirmed = await read(
+      server,
+      '/api/loomloom/market/workbook/run?listingId=listing-1',
+      { host, 'content-type': 'application/json' },
+      'POST',
+      JSON.stringify({ filename: 'filled.xlsx', content: 'ZmlsbGVk', clientRequestId: 'loomloom-ui-workbook-1', confirmationToken }),
+    )
+    assert.equal(unconfirmed.status, 403)
+    assert.equal(server.calls.length, 1)
+
+    const missingRequestId = await read(
+      server,
+      '/api/loomloom/market/workbook/run?listingId=listing-1',
+      { host, 'content-type': 'application/json' },
+      'POST',
+      JSON.stringify({ filename: 'filled.xlsx', content: 'ZmlsbGVk', confirm: true, confirmationToken }),
+    )
+    assert.equal(missingRequestId.status, 400)
+    assert.equal(server.calls.length, 1)
+
+    const run = await read(
+      server,
+      '/api/loomloom/market/workbook/run?listingId=listing-1',
+      { host, 'content-type': 'application/json' },
+      'POST',
+      JSON.stringify({ filename: 'filled.xlsx', content: 'ZmlsbGVk', confirm: true, clientRequestId: 'loomloom-ui-workbook-1', confirmationToken }),
+    )
+    assert.equal(run.status, 200)
+    const body = JSON.parse(String(server.calls[1]!.init?.body)) as Record<string, unknown>
+    assert.equal(body.confirm, true)
+    assert.equal(body.clientRequestId, 'loomloom-ui-workbook-1')
+    assert.equal(body.filename, 'filled.xlsx')
+
+    // Quote and validate stay unconfirmed: they never spend money.
+    await read(server, '/api/loomloom/market/workbook/quote?listingId=listing-1', { host, 'content-type': 'application/json' }, 'POST', JSON.stringify({ filename: 'a.xlsx', content: 'YWJj' }))
+    const quoteBody = JSON.parse(String(server.calls[2]!.init?.body)) as Record<string, unknown>
+    assert.equal('confirm' in quoteBody, false)
+  } finally { await server.close() }
+})
+
+test('workbook routes accept files larger than the generic JSON limit but within 16 MiB', async () => {
+  const server = await startServer({ apiResponse: { valid: true } })
+  const host = `127.0.0.1:${server.port}`
+  const content = Buffer.alloc(600 * 1024, 1).toString('base64')
+  try {
+    const result = await read(
+      server,
+      '/api/loomloom/market/workbook/validate?listingId=listing-1',
+      { host, 'content-type': 'application/json' },
+      'POST',
+      JSON.stringify({ filename: 'large.xlsx', content }),
+    )
+    assert.equal(result.status, 200)
+    assert.equal(server.calls.length, 1)
+  } finally { await server.close() }
+})
+
+test('private template and official template workbook routes forward correctly', async () => {
+  const server = await startServer({ apiResponse: { items: [], valid: true } })
+  const host = `127.0.0.1:${server.port}`
+  try {
+    const mine = await read(server, '/api/loomloom/my-templates', { host })
+    assert.equal(mine.status, 200)
+    const validate = await read(
+      server,
+      '/api/loomloom/templates/workbook/validate?templateId=official-1',
+      { host, 'content-type': 'application/json' },
+      'POST',
+      JSON.stringify({ filename: 'filled.xlsx', content: 'ZmlsbGVk' }),
+    )
+    assert.equal(validate.status, 200)
+    const precheck = await read(
+      server,
+      '/api/loomloom/templates/workbook/precheck?templateId=official-1',
+      { host, 'content-type': 'application/json' },
+      'POST',
+      JSON.stringify({ filename: 'filled.xlsx', content: 'ZmlsbGVk' }),
+    )
+    assert.equal(precheck.status, 200)
+    assert.deepEqual(server.calls.map(call => call.path), [
+      '/users/me/templates?pageSize=50',
+      '/officialTemplates/official-1:validateWorkbook',
+      '/officialTemplates/official-1:precheckWorkbook',
+    ])
+    // Template precheck is a cost estimate, never a confirmation.
+    const body = JSON.parse(String(server.calls[2]!.init?.body)) as Record<string, unknown>
+    assert.equal('confirm' in body, false)
+
+    const bad = await read(
+      server,
+      '/api/loomloom/templates/workbook/validate?templateId=../../secret',
+      { host, 'content-type': 'application/json' },
+      'POST',
+      JSON.stringify({ filename: 'x.xlsx', content: 'YWJj' }),
+    )
+    assert.equal(bad.status, 400)
+    assert.equal(server.calls.length, 3)
+  } finally { await server.close() }
+})
+
+test('market workbook download uses the real upstream content-disposition filename', async () => {
+  const server = await startServer({
+    binaryResponse: {
+      base64: Buffer.from('xlsx').toString('base64'),
+      byteLength: 4,
+      contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      filename: '019fccfe-c54c-73dc-b3ae-716b6589ae5d-1.xlsx',
+    },
+  })
+  const host = `127.0.0.1:${server.port}`
+  try {
+    const result = await readRaw(server, '/api/loomloom/market/workbook?listingId=listing-1', { host })
+    assert.equal(result.status, 200)
+    assert.equal(result.raw.toString('utf8'), 'xlsx')
+    assert.match(String(result.headers['content-type']), /spreadsheetml/)
+    assert.match(String(result.headers['content-disposition']), /019fccfe-c54c-73dc-b3ae-716b6589ae5d-1\.xlsx/)
+  } finally { await server.close() }
+})
+
+test('workbook download sanitizes control characters in an upstream filename', async () => {
+  const server = await startServer({
+    binaryResponse: {
+      base64: Buffer.from('xlsx').toString('base64'),
+      byteLength: 4,
+      contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      filename: 'report\r\nSet-Cookie: forged.xlsx',
+    },
+  })
+  const host = `127.0.0.1:${server.port}`
+  try {
+    const result = await readRaw(server, '/api/loomloom/market/workbook?listingId=listing-1', { host })
+    assert.equal(result.status, 200)
+    const disposition = String(result.headers['content-disposition'])
+    assert.doesNotMatch(disposition, /[\r\n]/u)
+    assert.doesNotMatch(disposition, /Set-Cookie:/u)
+    assert.match(disposition, /report__Set-Cookie_ forged\.xlsx/u)
+  } finally { await server.close() }
 })

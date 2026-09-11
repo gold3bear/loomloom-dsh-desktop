@@ -19,6 +19,7 @@ import {
 } from './market-navigation.js'
 import { en, zh } from './locales.js'
 import { installLoomloomStyles } from './styles.js'
+import type { SkillbotSessions } from './skillbot-prompt.js'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -26,19 +27,60 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 
-interface ClientSessions {
+/**
+ * The client sessions service.
+ *
+ * Structurally narrowed to what this plugin uses — the selection feed for the
+ * market surface, and the addressing/send route the conversation handoff needs.
+ * `loomloom` deliberately does not take a dependency on the session-controller
+ * package for a handful of members.
+ */
+/** The workspace-controller client face, narrowed to the group lookup. */
+interface ClientWorkspaces {
+  readonly list: {
+    getSnapshot(): {
+      readonly items: readonly {
+        readonly workspaceId: string
+        readonly sessionIds: readonly string[]
+      }[]
+    }
+  }
+}
+
+interface ClientSessions extends SkillbotSessions {
   clear(): void
   readonly list: {
-    getSnapshot(): { readonly current?: unknown }
+    getSnapshot(): { readonly current?: string }
     subscribe(listener: () => void): () => void
   }
 }
 
+// The handoff submits through `sessions.binding(id).session.prompt(...)` — both
+// published verbs. Two services are deliberately NOT injected: the conversation
+// service, whose scope-addressed `send` cannot be reached from a root plugin (see
+// `skillbot-prompt.ts`), and the workspace controller, which is read lazily and
+// degrades to "no group known" rather than blocking the plugin from loading.
 export const inject = ['slots', 'locale', 'sessions']
 export const NS = 'loomloom'
 
 export function apply(ctx: ClientContext): void {
   const sessions = ctx.get('sessions') as ClientSessions
+  /**
+   * Which workspace a session sits in — the key the sidebar groups by.
+   *
+   * A session row does not carry it, so it comes from the workspace list: the entry
+   * whose membership contains the session. Read at click time rather than at apply
+   * time on purpose — `ctx.get` is strict about the provider fiber being settled,
+   * and reading it during composition is what silently downgraded the storefront
+   * cache to memory-only. A composition without the workspace controller yields no
+   * group, and the caller falls back to the host default.
+   */
+  const workspaceOf = (sessionId: string): string | undefined => {
+    const workspaces = ctx.get('workspaces') as ClientWorkspaces | undefined
+    if (workspaces === undefined) return undefined
+    return workspaces.list.getSnapshot().items
+      .find(item => item.sessionIds.includes(sessionId))?.workspaceId
+  }
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'loomloom: dictionaries')
   ctx.effect(() => installLoomloomStyles(), 'loomloom: styles')
   ctx.effect(() => {
@@ -81,7 +123,7 @@ export function apply(ctx: ClientContext): void {
     const MainSurface = ({ defaultContent }: { readonly defaultContent: ReactNode }) => {
       const active = useLoomloomMarketActive()
       return active
-        ? createElement(LoomloomMarketPage, { t: ctx.locale.bind(NS) })
+        ? createElement(LoomloomMarketPage, { t: ctx.locale.bind(NS), sessions, workspaceOf })
         : defaultContent
     }
     return ctx.slots.register({

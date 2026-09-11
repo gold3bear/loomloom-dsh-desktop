@@ -1,0 +1,5 @@
+# Bilingual-pair consistency record: the git blob hash of each side as of the last
+# confirmed-consistent state. Both languages carry equal authority. Update both files
+# and re-record their hashes with git hash-object after editing either side.
+2026-09-10-loomloom-upstream-contract-alignment.md: c84a047b5e86be651966882cf5627c44637f6a89
+2026-09-10-loomloom-upstream-contract-alignment.zh.md: b01d6c306b5ff18bdf371bbea1ede44d6c70546e

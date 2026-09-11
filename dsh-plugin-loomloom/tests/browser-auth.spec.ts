@@ -7,26 +7,29 @@ test('verifies a browser-exchanged credential against Loom and the fixed ShengSu
   const originalFetch = globalThis.fetch
   const calls: { endpoint: string, authorization: string }[] = []
   globalThis.fetch = async (input, init) => {
-    calls.push({ endpoint: String(input), authorization: new Headers(init?.headers).get('authorization') ?? '' })
-    return new Response(JSON.stringify(calls.length === 1 ? { items: [] } : { data: [{ id: 'deepseek/deepseek-v4-flash' }] }), { status: 200 })
+    const endpoint = String(input)
+    calls.push({ endpoint, authorization: new Headers(init?.headers).get('authorization') ?? '' })
+    return new Response(JSON.stringify(endpoint.includes('loomloom.shengsuanyun.com')
+      ? { items: [] }
+      : { data: [{ id: 'deepseek/deepseek-v4-flash' }] }), { status: 200 })
   }
   try {
     await verifyBrowserCredential('browser-only-secret', resolveLoomConfig(), new AbortController().signal)
   } finally {
     globalThis.fetch = originalFetch
   }
-  assert.deepEqual(calls, [
+  assert.deepEqual([...calls].sort((left, right) => left.endpoint.localeCompare(right.endpoint)), [
     { endpoint: 'https://loomloom.shengsuanyun.com/loom/v1/users/me/runs?pageSize=1', authorization: 'Bearer browser-only-secret' },
     { endpoint: 'https://router.shengsuanyun.com/api/v1/models', authorization: 'Bearer browser-only-secret' },
-  ])
+  ].sort((left, right) => left.endpoint.localeCompare(right.endpoint)))
 })
 
 test('rejects a Router model response that has no usable model ids', async () => {
   const originalFetch = globalThis.fetch
-  let calls = 0
-  globalThis.fetch = async () => {
-    calls += 1
-    return new Response(JSON.stringify(calls === 1 ? { items: [] } : { data: [] }), { status: 200 })
+  globalThis.fetch = async input => {
+    return new Response(JSON.stringify(String(input).includes('loomloom.shengsuanyun.com')
+      ? { items: [] }
+      : { data: [] }), { status: 200 })
   }
   try {
     await assert.rejects(

@@ -1,10 +1,16 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { setTimeout as scheduleTimeout } from 'node:timers/promises'
 import { LoomApi, LoomApiError } from './loom-api.js'
+import { capArtifactText } from './result-presentation.js'
 
 const MAX_INPUT_ROWS = 100
 const DRAFT_TTL_MS = 10 * 60_000
 const ID_PATTERN = /^[A-Za-z0-9._-]{1,200}$/
+/** Upstream monetary unit system: 10,000,000 raw API units equal one currency unit. */
+const RAW_UNITS_PER_CURRENCY = 10_000_000
+const RAW_UNITS_PER_CURRENCY_BIGINT = 10_000_000n
+const MAX_MARKET_PAGES = 20
+const MAX_MARKET_LISTINGS = MAX_MARKET_PAGES * 100
 
 /**
  * Run statuses that mark a run as no longer progressing on the server. A run
@@ -20,7 +26,11 @@ export const TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set([
   'errored',
   'cancelled',
   'canceled',
+  // The live `/users/me/runs` list emits `partially_failed`. The shorter
+  // `partial_failed` spelling is kept because it has appeared elsewhere in the
+  // API surface; a missed terminal state would leave a poller spinning forever.
   'partial_failed',
+  'partially_failed',
 ])
 
 /**
@@ -129,6 +139,14 @@ export interface RunArtifact {
   readonly label: string
   readonly mimeType?: string
   readonly accessUrl?: string
+  /**
+   * Inline text payload when the upstream returns the artifact body directly.
+   *
+   * This is the run's own output, and it is the one field whose size the upstream
+   * controls, so it is bounded by `capArtifactText` before it reaches either the
+   * model or the tool card.
+   */
+  readonly inlineText?: string
 }
 
 export interface SkillbotToolValue {
@@ -138,6 +156,109 @@ export interface SkillbotToolValue {
   readonly available: boolean
   readonly fixedFee?: string
   readonly versionId?: string
+}
+
+/** Account balance snapshot from `/users/me/balance`. */
+export interface BalanceSnapshot {
+  readonly currency?: string
+  /** Converted amount, or the `*T` value divided by 10,000,000. */
+  readonly availableBalance?: string
+}
+
+/** One creator-owned Market listing from `/creators/me/marketListings`. */
+export interface CreatorListing {
+  readonly id: string
+  readonly name: string
+  readonly description: string
+  readonly status?: string
+  readonly saleStatus?: string
+  readonly available: boolean
+  readonly fixedFee?: string
+  readonly currency?: string
+  readonly listingVersionId?: string
+  readonly publishedVersionId?: string
+  readonly reviewStatus?: string
+  readonly reviewReason?: string
+}
+
+/** One creator Market transaction from `/creators/me/marketTransactions`. */
+export interface CreatorTransaction {
+  readonly runTransactionId?: string
+  readonly runId?: string
+  readonly listingId?: string
+  readonly skillName?: string
+  readonly taskFixedFee?: string
+  readonly finalBuyerPayable?: string
+  readonly currency?: string
+  readonly transactionStatus?: string
+}
+
+/** Result of publishing a listing through `POST /marketListings`. */
+export interface PublishedListing {
+  readonly id: string
+  readonly status?: string
+  readonly reviewStatus?: string
+  readonly reviewRequestId?: string
+  readonly name?: string
+}
+
+export interface PublishListingInput {
+  readonly displayName: string
+  readonly description?: string
+  readonly templateId: string
+  readonly templateVersionId: string
+  readonly taskFixedFee: number
+  readonly listingId?: string
+}
+
+/** One official template from `GET /officialTemplates`. */
+export interface OfficialTemplate {
+  readonly templateId: string
+  readonly name: string
+  readonly scenario?: string
+  readonly inputSummary?: string
+  readonly outputType?: string
+  readonly version?: string
+}
+
+/** One private (creator-authored) template from `GET /users/me/templates`. */
+export interface MyTemplate {
+  readonly templateId: string
+  readonly name: string
+  readonly description?: string
+  readonly status?: string
+  readonly latestVersionId?: string
+  readonly publishedVersionId?: string
+  readonly outputType?: string
+}
+
+/** One declared field of an official template input schema. */
+export interface TemplateField {
+  readonly key: string
+  readonly label: string
+  readonly required: boolean
+  readonly valueType: string
+  readonly inputHint?: string
+  readonly enumValues?: readonly string[]
+  readonly examples?: readonly string[]
+}
+
+/** The full input schema of one official template. */
+export interface TemplateSchema {
+  readonly templateId: string
+  readonly name?: string
+  readonly description?: string
+  readonly scenario?: string
+  readonly outputType?: string
+  readonly fields: readonly TemplateField[]
+}
+
+/** A downloaded workbook carried as base64 plus its suggested filename. */
+export interface WorkbookDownload {
+  readonly base64: string
+  readonly byteLength: number
+  readonly contentType: string
+  readonly filename: string
 }
 
 export interface DraftToolValue {
@@ -150,7 +271,6 @@ export interface DraftToolValue {
 
 interface StoredDraft extends ExecutionDraft {
   readonly agent: object
-  readonly listingVersionId: string
   readonly inputRows: readonly Record<string, unknown>[]
   readonly fingerprint: string
   readonly clientRequestId: string
@@ -172,22 +292,46 @@ function pickText(value: Record<string, unknown>, keys: readonly string[]): stri
   return ''
 }
 
+/** Reads the upstream market page cursor, honouring both nested shapes. */
+function nextPageToken(value: Record<string, unknown>): string {
+  const data = asRecord(value.data)
+  return pickText(value, ['nextPageToken', 'next_page_token']) || pickText(data, ['nextPageToken', 'next_page_token'])
+}
+
+/**
+ * Local keyword matching over the full dataset. Terms are split on
+ * whitespace and matched case-insensitively against title, description and
+ * id; listings with any hit are kept, ordered by hit count (most relevant
+ * first). A non-ASCII keyword needs no tokenization to match.
+ */
+function matchKeyword(listings: readonly SkillbotSummary[], keyword: string): readonly SkillbotSummary[] {
+  const terms = keyword.trim().split(/\s+/u).filter(term => term !== '')
+  if (terms.length === 0) return listings
+  const normalized = terms.map(term => term.toLocaleLowerCase())
+  const scored = listings.map(listing => {
+    const haystack = `${listing.name} ${listing.description} ${listing.id}`.toLocaleLowerCase()
+    const hits = normalized.filter(term => haystack.includes(term)).length
+    return { listing, hits }
+  })
+  const matched = scored.filter(entry => entry.hits > 0)
+  matched.sort((left, right) => right.hits - left.hits)
+  return matched.map(entry => entry.listing)
+}
+
 function fixedFee(value: Record<string, unknown>): string | undefined {
-  const fee = asRecord(value.taskFixedFee)
-  const amount = text(fee.amount)
-  return amount === '' ? undefined : amount
+  return money(value, 'taskFixedFee', 'taskFixedFeeT', text(value.currency))?.amount
 }
 
 function listingVersion(value: Record<string, unknown>): string | undefined {
-  const version = pickText(value, ['listingVersionId', 'activeListingVersionId', 'latestListingVersionId', 'publishedVersionId', 'currentVersionId', 'versionId'])
+  const version = text(value.listingVersionId)
   return version === '' ? undefined : version
 }
 
 function summary(value: Record<string, unknown>): SkillbotSummary {
-  const id = pickText(value, ['id', 'listingId', 'marketListingId'])
+  const id = text(value.id)
   if (!ID_PATTERN.test(id)) throw new LoomApiError(502, 'loomloom returned a listing without a valid id')
-  const name = pickText(value, ['displayName', 'name']) || id
-  const description = pickText(value, ['description'])
+  const name = text(value.displayName) || id
+  const description = text(value.description)
   const versionId = listingVersion(value)
   const fee = fixedFee(value)
   return {
@@ -250,22 +394,25 @@ function inputRows(value: unknown): readonly Record<string, unknown>[] {
 }
 
 function validateRows(fields: readonly SkillbotField[], rows: readonly Record<string, unknown>[]): void {
+  const declared = new Set(fields.map(field => field.key))
   for (const [rowIndex, row] of rows.entries()) {
+    for (const key of Object.keys(row)) {
+      if (!declared.has(key)) throw new LoomApiError(400, `inputRows[${rowIndex}].${key} is not declared by the public input schema`)
+    }
     for (const field of fields) {
       const value = row[field.key]
       if (field.required && (value === undefined || value === null || value === '')) {
         throw new LoomApiError(400, `inputRows[${rowIndex}].${field.key} is required`)
       }
       if (value === undefined || value === null) continue
-      if (field.enumValues !== undefined && (!Array.isArray(field.enumValues) || typeof value !== 'string' || !field.enumValues.includes(value))) {
-        throw new LoomApiError(400, `inputRows[${rowIndex}].${field.key} must be one of the declared values`)
-      }
       if (field.valueType === 'boolean' || field.valueType === 'bool') {
         if (typeof value !== 'boolean') throw new LoomApiError(400, `inputRows[${rowIndex}].${field.key} must be a boolean`)
       } else if (field.valueType === 'integer') {
         if (typeof value !== 'number' || !Number.isInteger(value)) throw new LoomApiError(400, `inputRows[${rowIndex}].${field.key} must be an integer`)
       } else if (field.valueType === 'number' || field.valueType === 'float') {
         if (typeof value !== 'number' || !Number.isFinite(value)) throw new LoomApiError(400, `inputRows[${rowIndex}].${field.key} must be a number`)
+      } else if (field.valueType === 'enum') {
+        if (typeof value !== 'string') throw new LoomApiError(400, `inputRows[${rowIndex}].${field.key} must be a string`)
       } else if (field.valueType === 'string' && typeof value !== 'string') {
         throw new LoomApiError(400, `inputRows[${rowIndex}].${field.key} must be a string`)
       }
@@ -276,8 +423,8 @@ function validateRows(fields: readonly SkillbotField[], rows: readonly Record<st
 function extractRun(value: unknown): { readonly runId?: string, readonly status?: string } {
   const outer = asRecord(value)
   const run = typeof outer.run === 'string' ? { runId: outer.run } : asRecord(outer.run ?? outer.data ?? outer)
-  const runId = pickText(run, ['runId', 'id']) || pickText(outer, ['runId', 'id'])
-  const status = pickText(run, ['status']) || pickText(outer, ['status'])
+  const runId = text(run.runId) || text(outer.runId)
+  const status = text(run.status) || text(outer.status)
   return {
     ...(ID_PATTERN.test(runId) ? { runId } : {}),
     ...(status === '' ? {} : { status }),
@@ -291,7 +438,7 @@ function runRecord(value: unknown): Record<string, unknown> {
 
 function resultItems(value: unknown): readonly Record<string, unknown>[] {
   const payload = asRecord(value)
-  const items = payload.items ?? payload.resultRows ?? payload.rows
+  const items = payload.items ?? payload.rows
   return Array.isArray(items) ? items.map(asRecord) : []
 }
 
@@ -300,18 +447,133 @@ function artifacts(value: unknown): readonly RunArtifact[] {
   const items = payload.items ?? payload.artifacts
   if (!Array.isArray(items)) return []
   return items.map(asRecord).map((item, index) => {
-    const id = pickText(item, ['artifactId', 'id'])
+    const id = text(item.artifactId)
     if (!ID_PATTERN.test(id)) throw new LoomApiError(502, `loomloom returned invalid artifact ${index + 1}`)
     const label = pickText(item, ['stepLabel', 'displayName', 'portName', 'stepId']) || id
-    const mimeType = pickText(item, ['mimeType'])
-    const accessUrl = pickText(item, ['accessUrl'])
+    const mimeType = text(item.mimeType)
+    const accessUrl = text(item.accessUrl)
     if (accessUrl !== '' && !/^https:\/\//u.test(accessUrl)) throw new LoomApiError(502, `loomloom returned invalid artifact URL ${index + 1}`)
+    // The run's output is kept — without it neither the card nor the model can say
+    // what the run produced — but only within the presentation budget: this is the
+    // field the upstream sizes, not us.
+    const inlineText = capArtifactText(pickText(item, ['inlineText', 'inline_text', 'content', 'text']))
     return {
       id, label,
       ...(mimeType === '' ? {} : { mimeType }),
       ...(accessUrl === '' ? {} : { accessUrl }),
+      ...(inlineText === '' ? {} : { inlineText }),
     }
   })
+}
+
+/**
+ * Parse one creator-owned listing (`/creators/me/marketListings`). Unlike the
+ * public market listing this shape carries review fields, so the id and name
+ * keys stay the same while review state is surfaced when present.
+ */
+function creatorListing(value: Record<string, unknown>): CreatorListing {
+  const id = text(value.id)
+  if (!ID_PATTERN.test(id)) throw new LoomApiError(502, 'loomloom returned a creator listing without a valid id')
+  const currency = pickText(value, ['currency'])
+  const fee = money(value, 'taskFixedFee', 'taskFixedFeeT', currency)
+  return {
+    id,
+    name: text(value.displayName) || id,
+    description: text(value.description),
+    available: text(value.executionAvailabilityStatus) === 'available',
+    ...(text(value.status) === '' ? {} : { status: text(value.status) }),
+    ...(text(value.saleStatus) === '' ? {} : { saleStatus: text(value.saleStatus) }),
+    ...(fee === undefined ? {} : { fixedFee: fee.amount }),
+    ...(fee?.currency === undefined && currency === '' ? {} : { currency: fee?.currency ?? currency }),
+    ...(text(value.listingVersionId) === '' ? {} : { listingVersionId: text(value.listingVersionId) }),
+    ...(text(value.publishedVersionId) === '' ? {} : { publishedVersionId: text(value.publishedVersionId) }),
+    ...(pickText(value, ['reviewStatus', 'review_status']) === '' ? {} : { reviewStatus: pickText(value, ['reviewStatus', 'review_status']) }),
+    ...(pickText(value, ['reviewReason', 'review_reason']) === '' ? {} : { reviewReason: pickText(value, ['reviewReason', 'review_reason']) }),
+  }
+}
+
+/** Parse one creator transaction (`/creators/me/marketTransactions`). */
+function creatorTransaction(value: Record<string, unknown>): CreatorTransaction {
+  const currency = pickText(value, ['currency'])
+  const fee = money(value, 'taskFixedFee', 'taskFixedFeeT', currency)
+  const payable = money(value, 'finalBuyerPayable', 'finalBuyerPayableT', currency)
+  return {
+    ...(text(value.runTransactionId) === '' ? {} : { runTransactionId: text(value.runTransactionId) }),
+    ...(text(value.runId) === '' ? {} : { runId: text(value.runId) }),
+    ...(text(value.listingId) === '' ? {} : { listingId: text(value.listingId) }),
+    ...(pickText(value, ['skillName', 'skill_name']) === '' ? {} : { skillName: pickText(value, ['skillName', 'skill_name']) }),
+    ...(fee === undefined ? {} : { taskFixedFee: fee.amount }),
+    ...(payable === undefined ? {} : { finalBuyerPayable: payable.amount }),
+    ...(fee?.currency === undefined && payable?.currency === undefined && currency === '' ? {} : { currency: fee?.currency ?? payable?.currency ?? currency }),
+    ...(text(value.transactionStatus) === '' ? {} : { transactionStatus: text(value.transactionStatus) }),
+  }
+}
+
+/** Parse one official template summary (`GET /officialTemplates`). */
+function officialTemplate(value: Record<string, unknown>): OfficialTemplate {
+  const templateId = pickText(value, ['templateId', 'template_id', 'id'])
+  if (!ID_PATTERN.test(templateId)) throw new LoomApiError(502, 'loomloom returned an official template without a valid id')
+  return {
+    templateId,
+    name: pickText(value, ['name', 'displayName']) || templateId,
+    ...(pickText(value, ['scenario']) === '' ? {} : { scenario: pickText(value, ['scenario']) }),
+    ...(pickText(value, ['inputSummary', 'input_summary']) === '' ? {} : { inputSummary: pickText(value, ['inputSummary', 'input_summary']) }),
+    ...(pickText(value, ['outputType', 'output_type']) === '' ? {} : { outputType: pickText(value, ['outputType', 'output_type']) }),
+    ...(pickText(value, ['version']) === '' ? {} : { version: pickText(value, ['version']) }),
+  }
+}
+
+/** Parse one private template summary (`GET /users/me/templates`). */
+function myTemplate(value: Record<string, unknown>): MyTemplate {
+  const templateId = pickText(value, ['templateId', 'template_id', 'id'])
+  if (!ID_PATTERN.test(templateId)) throw new LoomApiError(502, 'loomloom returned a private template without a valid id')
+  return {
+    templateId,
+    name: pickText(value, ['name', 'displayName']) || templateId,
+    ...(pickText(value, ['description']) === '' ? {} : { description: pickText(value, ['description']) }),
+    ...(pickText(value, ['status']) === '' ? {} : { status: pickText(value, ['status']) }),
+    ...(pickText(value, ['latestVersionId', 'latest_version_id']) === '' ? {} : { latestVersionId: pickText(value, ['latestVersionId', 'latest_version_id']) }),
+    ...(pickText(value, ['publishedVersionId', 'published_version_id']) === '' ? {} : { publishedVersionId: pickText(value, ['publishedVersionId', 'published_version_id']) }),
+    ...(pickText(value, ['primaryOutputType', 'primary_output_type', 'outputType']) === '' ? {} : { outputType: pickText(value, ['primaryOutputType', 'primary_output_type', 'outputType']) }),
+  }
+}
+
+/** Parse the declared fields of an official template schema. */
+function templateFields(value: unknown): readonly TemplateField[] {
+  if (!Array.isArray(value)) return []
+  return value.map((field, index) => {
+    const record = asRecord(field)
+    const key = pickText(record, ['key', 'fieldKey', 'name'])
+    if (!ID_PATTERN.test(key)) throw new LoomApiError(502, `loomloom template field ${index + 1} is invalid`)
+    const enums = record.enumValues ?? record.enum_values
+    const examples = record.examples
+    const enumValues = Array.isArray(enums) ? enums.filter((item): item is string => typeof item === 'string') : undefined
+    const exampleValues = Array.isArray(examples) ? examples.filter((item): item is string => typeof item === 'string') : undefined
+    const hint = pickText(record, ['inputHint', 'input_hint', 'businessHint', 'business_hint'])
+    return {
+      key,
+      label: pickText(record, ['label', 'title']) || key,
+      required: record.required === true,
+      valueType: pickText(record, ['type', 'valueType', 'value_type']) || 'string',
+      ...(hint === '' ? {} : { inputHint: hint }),
+      ...(enumValues === undefined || enumValues.length === 0 ? {} : { enumValues }),
+      ...(exampleValues === undefined || exampleValues.length === 0 ? {} : { examples: exampleValues }),
+    }
+  })
+}
+
+/** Parse the full schema of one official template. */
+function templateSchema(value: Record<string, unknown>): TemplateSchema {
+  const templateId = pickText(value, ['templateId', 'template_id', 'id'])
+  if (!ID_PATTERN.test(templateId)) throw new LoomApiError(502, 'loomloom returned a template schema without a valid id')
+  return {
+    templateId,
+    fields: templateFields(value.fields),
+    ...(pickText(value, ['name', 'displayName']) === '' ? {} : { name: pickText(value, ['name', 'displayName']) }),
+    ...(pickText(value, ['description']) === '' ? {} : { description: pickText(value, ['description']) }),
+    ...(pickText(value, ['scenario']) === '' ? {} : { scenario: pickText(value, ['scenario']) }),
+    ...(pickText(value, ['outputType', 'output_type']) === '' ? {} : { outputType: pickText(value, ['outputType', 'output_type']) }),
+  }
 }
 
 function monetaryText(value: unknown): { readonly amount: string, readonly currency?: string } | undefined {
@@ -324,17 +586,41 @@ function monetaryText(value: unknown): { readonly amount: string, readonly curre
   return { amount, ...(currency === '' ? {} : { currency }) }
 }
 
+/**
+ * Resolve a monetary field the same way the upstream CLI does: prefer the
+ * converted `moneyResponse` object; otherwise convert the raw-unit `*T`
+ * integer using `10,000,000 units = 1 currency unit`. Currency is never
+ * guessed when only a `*T` value is present.
+ */
+function money(value: Record<string, unknown>, moneyKey: string, rawKey: string, currency: string): { readonly amount: string, readonly currency?: string } | undefined {
+  const converted = monetaryText(value[moneyKey])
+  if (converted !== undefined) return { ...converted, ...(converted.currency === undefined && currency !== '' ? { currency } : {}) }
+  const raw = value[rawKey]
+  const units = typeof raw === 'number' && Number.isSafeInteger(raw)
+    ? BigInt(raw)
+    : typeof raw === 'string' && /^-?\d+$/u.test(raw.trim())
+      ? BigInt(raw.trim())
+      : undefined
+  if (units === undefined) return undefined
+  const negative = units < 0n
+  const absolute = negative ? -units : units
+  const whole = absolute / RAW_UNITS_PER_CURRENCY_BIGINT
+  const fraction = (absolute % RAW_UNITS_PER_CURRENCY_BIGINT).toString().padStart(7, '0').replace(/0+$/u, '')
+  const amount = `${negative ? '-' : ''}${whole}${fraction === '' ? '' : `.${fraction}`}`
+  return { amount, ...(currency === '' ? {} : { currency }) }
+}
+
 function parseQuote(value: unknown): MarketQuote {
   const payload = asRecord(value)
   const quote = asRecord(payload.quote ?? payload.data ?? payload)
-  const payable = monetaryText(quote.estimatedBuyerPayable ?? quote.buyerPayable ?? quote.estimatedPayable)
-    ?? monetaryText(payload.estimatedBuyerPayable ?? payload.buyerPayable ?? payload.estimatedPayable)
+  const currency = pickText(quote, ['currency', 'currencyCode']) || pickText(payload, ['currency', 'currencyCode'])
+  const payable = money(quote, 'estimatedBuyerPayable', 'estimatedBuyerPayableT', currency)
+    ?? money(payload, 'estimatedBuyerPayable', 'estimatedBuyerPayableT', currency)
   if (payable === undefined) throw new LoomApiError(502, 'loomloom quote did not return an estimated buyer payable amount')
-  const fee = monetaryText(quote.taskFixedFee ?? payload.taskFixedFee)
-  const currency = payable.currency ?? (pickText(quote, ['currency', 'currencyCode']) || pickText(payload, ['currency', 'currencyCode']))
+  const fee = money(quote, 'taskFixedFee', 'taskFixedFeeT', currency) ?? money(payload, 'taskFixedFee', 'taskFixedFeeT', currency)
   return {
     estimatedBuyerPayable: payable.amount,
-    ...(currency === '' ? {} : { currency }),
+    ...(payable.currency === undefined ? {} : { currency: payable.currency }),
     ...(fee === undefined ? {} : { taskFixedFee: fee.amount }),
   }
 }
@@ -344,10 +630,40 @@ export class LoomSkillbotService {
 
   constructor(private readonly api: LoomApi, private readonly now: () => number = Date.now) {}
 
-  async list(signal?: AbortSignal): Promise<readonly SkillbotSummary[]> {
-    const payload = asRecord(await this.api.request('/marketListings?pageSize=100', {}, signal))
-    const items = Array.isArray(payload.items) ? payload.items : []
-    return items.map(item => summary(asRecord(item))).filter(item => item.available)
+  async list(signal?: AbortSignal, options: { keyword?: string } = {}): Promise<readonly SkillbotSummary[]> {
+    // Browsing returns the first page quickly. Keyword search walks the bounded
+    // dataset because the upstream keyword matching is unreliable for non-ASCII.
+    const merged: SkillbotSummary[] = []
+    const seen = new Set<string>()
+    let pageToken = ''
+    let complete = false
+    const keyword = text(options.keyword)
+    for (let page = 0; page < MAX_MARKET_PAGES; page += 1) {
+      const query = new URLSearchParams({ pageSize: '100' })
+      if (pageToken !== '') query.set('pageToken', pageToken)
+      const payload = asRecord(await this.api.request(`/marketListings?${query.toString()}`, {}, signal))
+      const items = Array.isArray(payload.items) ? payload.items : []
+      for (const item of items) {
+        const candidate = summary(asRecord(item))
+        if (candidate.available) {
+          if (merged.length >= MAX_MARKET_LISTINGS) throw new LoomApiError(502, 'loomloom market listing limit exceeded')
+          merged.push(candidate)
+        }
+      }
+      pageToken = nextPageToken(payload)
+      if (keyword === '') {
+        complete = true
+        break
+      }
+      if (pageToken === '') {
+        complete = true
+        break
+      }
+      if (seen.has(pageToken)) throw new LoomApiError(502, 'loomloom returned a repeating market listing page token')
+      seen.add(pageToken)
+    }
+    if (!complete) throw new LoomApiError(502, 'loomloom market page limit exceeded')
+    return keyword === '' ? merged : matchKeyword(merged, keyword)
   }
 
   async get(listingId: string, signal?: AbortSignal): Promise<SkillbotDetail> {
@@ -356,12 +672,139 @@ export class LoomSkillbotService {
     return { ...summary(payload), fields: parseFields(payload) }
   }
 
+  /**
+   * Read the settled balance snapshot. `/users/me/balance` carries the raw
+   * `availableBalanceT` integer and the converted `availableBalance` object;
+   * `money()` prefers the converted form and never guesses the currency.
+   */
+  async getBalance(signal?: AbortSignal): Promise<BalanceSnapshot> {
+    const payload = asRecord(await this.api.request('/users/me/balance', {}, signal))
+    const currency = pickText(payload, ['currency'])
+    const available = money(payload, 'availableBalance', 'availableBalanceT', currency)
+    return {
+      ...(available?.currency === undefined && currency === '' ? {} : { currency: available?.currency ?? currency }),
+      ...(available === undefined ? {} : { availableBalance: available.amount }),
+    }
+  }
+
+  /** List creator-owned Market listings from `/creators/me/marketListings`. */
+  async listMyListings(signal?: AbortSignal): Promise<readonly CreatorListing[]> {
+    const payload = asRecord(await this.api.request('/creators/me/marketListings?pageSize=100', {}, signal))
+    const items = Array.isArray(payload.items) ? payload.items : []
+    return items.map(item => creatorListing(asRecord(item)))
+  }
+
+  /** List creator Market transactions from `/creators/me/marketTransactions`. */
+  async listCreatorTransactions(signal?: AbortSignal): Promise<readonly CreatorTransaction[]> {
+    const payload = asRecord(await this.api.request('/creators/me/marketTransactions?pageSize=100', {}, signal))
+    const items = Array.isArray(payload.items) ? payload.items : []
+    return items.map(item => creatorTransaction(asRecord(item)))
+  }
+
+  /** List official (first-party) templates from `GET /officialTemplates`. */
+  async listOfficialTemplates(signal?: AbortSignal): Promise<readonly OfficialTemplate[]> {
+    const payload = asRecord(await this.api.request('/officialTemplates', {}, signal))
+    const items = Array.isArray(payload.templates) ? payload.templates : Array.isArray(payload.items) ? payload.items : []
+    return items.map(item => officialTemplate(asRecord(item)))
+  }
+
+  /**
+   * List the account's private (creator-authored) templates. Publishing a
+   * listing requires a template id and version id, and both come from here.
+   */
+  async listMyTemplates(signal?: AbortSignal): Promise<readonly MyTemplate[]> {
+    const payload = asRecord(await this.api.request('/users/me/templates?pageSize=50', {}, signal))
+    const items = Array.isArray(payload.items) ? payload.items : Array.isArray(payload.templates) ? payload.templates : []
+    return items.map(item => myTemplate(asRecord(item)))
+  }
+
+  /** Read one official template input schema from `GET /officialTemplates/{id}/schema`. */
+  async getTemplateSchema(templateId: string, signal?: AbortSignal): Promise<TemplateSchema> {
+    if (!ID_PATTERN.test(templateId)) throw new LoomApiError(400, 'invalid templateId')
+    const payload = asRecord(await this.api.request(`/officialTemplates/${encodeURIComponent(templateId)}/schema`, {}, signal))
+    return templateSchema(payload)
+  }
+
+  /** Download a Market SkillBot input workbook (`GET /marketListings/{id}/workbook`). */
+  async downloadMarketWorkbook(listingId: string, signal?: AbortSignal): Promise<WorkbookDownload> {
+    if (!ID_PATTERN.test(listingId)) throw new LoomApiError(400, 'invalid listingId')
+    const binary = await this.api.requestBinary(`/marketListings/${encodeURIComponent(listingId)}/workbook`, {}, signal)
+    return { base64: binary.base64, byteLength: binary.byteLength, contentType: binary.contentType, filename: binary.filename ?? `${listingId}.xlsx` }
+  }
+
+  /** Download an official template input workbook (`GET /officialTemplates/{id}/workbook`). */
+  async downloadTemplateWorkbook(templateId: string, signal?: AbortSignal): Promise<WorkbookDownload> {
+    if (!ID_PATTERN.test(templateId)) throw new LoomApiError(400, 'invalid templateId')
+    const binary = await this.api.requestBinary(`/officialTemplates/${encodeURIComponent(templateId)}/workbook`, {}, signal)
+    return { base64: binary.base64, byteLength: binary.byteLength, contentType: binary.contentType, filename: binary.filename ?? `${templateId}.xlsx` }
+  }
+
+  /**
+   * Upload JSONL orchestration input rows (`POST /orchestrationInputs:upload`).
+   * The upstream expects `content` as raw bytes, which Go encodes as base64 in
+   * JSON, so the caller's text is base64 encoded here.
+   */
+  async uploadOrchestrationInput(filename: string, content: string, signal?: AbortSignal): Promise<{ readonly inputFileId: string, readonly rowCount?: number }> {
+    const name = text(filename)
+    if (name === '') throw new LoomApiError(400, 'filename is required')
+    if (text(content) === '') throw new LoomApiError(400, 'content is required')
+    const payload = { filename: name, content: Buffer.from(content, 'utf8').toString('base64') }
+    const response = asRecord(await this.api.request('/orchestrationInputs:upload', { method: 'POST', body: JSON.stringify(payload) }, signal))
+    const inputFileId = pickText(response, ['inputFileId', 'input_file_id'])
+    if (inputFileId === '') throw new LoomApiError(502, 'loomloom did not return an inputFileId')
+    const rowCount = response.rowCount ?? response.row_count
+    return {
+      inputFileId,
+      ...(typeof rowCount === 'number' && Number.isFinite(rowCount) ? { rowCount } : {}),
+    }
+  }
+
+  async publishListing(input: PublishListingInput, signal?: AbortSignal): Promise<PublishedListing> {
+    const displayName = text(input.displayName)
+    if (displayName === '') throw new LoomApiError(400, 'displayName is required')
+    const templateId = text(input.templateId)
+    if (!ID_PATTERN.test(templateId)) throw new LoomApiError(400, 'templateId is required')
+    const templateVersionId = text(input.templateVersionId)
+    if (!ID_PATTERN.test(templateVersionId)) throw new LoomApiError(400, 'templateVersionId is required')
+    const listingId = text(input.listingId)
+    if (listingId !== '' && !ID_PATTERN.test(listingId)) throw new LoomApiError(400, 'listingId is invalid')
+    if (!Number.isFinite(input.taskFixedFee) || input.taskFixedFee < 0 || input.taskFixedFee > Number.MAX_SAFE_INTEGER / RAW_UNITS_PER_CURRENCY) {
+      throw new LoomApiError(400, 'taskFixedFee must be a non-negative number that can be represented exactly')
+    }
+    const scaledFee = input.taskFixedFee * RAW_UNITS_PER_CURRENCY
+    if (!Number.isInteger(scaledFee)) throw new LoomApiError(400, 'taskFixedFee supports at most 7 decimal places')
+    const taskFixedFeeT = scaledFee
+    if (!Number.isSafeInteger(taskFixedFeeT)) throw new LoomApiError(400, 'taskFixedFee must be representable in raw API units')
+    const payload = {
+      displayName,
+      templateId,
+      templateVersionId,
+      taskFixedFeeT,
+      ...(text(input.description) === '' ? {} : { description: text(input.description) }),
+      ...(listingId === '' ? {} : { listingId }),
+    }
+    const response = asRecord(await this.api.request('/marketListings', { method: 'POST', body: JSON.stringify(payload) }, signal))
+    const id = text(response.id) || text(response.listingId)
+    if (!ID_PATTERN.test(id)) throw new LoomApiError(502, 'loomloom did not return a published listing id')
+    const status = text(response.status)
+    const reviewStatus = pickText(response, ['reviewStatus', 'review_status'])
+    const reviewRequestId = pickText(response, ['reviewRequestId', 'review_request_id'])
+    const name = text(response.displayName)
+    return {
+      id,
+      ...(status === '' ? {} : { status }),
+      ...(reviewStatus === '' ? {} : { reviewStatus }),
+      ...(reviewRequestId === '' ? {} : { reviewRequestId }),
+      ...(name === '' ? {} : { name }),
+    }
+  }
+
   async getRun(runId: string, signal?: AbortSignal): Promise<{ readonly runId: string, readonly status: string, readonly displayName: string }> {
     if (!ID_PATTERN.test(runId)) throw new LoomApiError(400, 'invalid runId')
     const payload = runRecord(await this.api.request(`/users/me/runs/${encodeURIComponent(runId)}`, {}, signal))
     return {
-      runId: pickText(payload, ['runId', 'id']) || runId,
-      status: pickText(payload, ['status']) || 'unknown',
+      runId: text(payload.runId) || runId,
+      status: text(payload.status) || 'unknown',
       displayName: pickText(payload, ['displayName', 'name']) || runId,
     }
   }
@@ -431,18 +874,17 @@ export class LoomSkillbotService {
     }
   }
 
-  async prepare(agent: object, listingId: string, listingVersionId: string | undefined, rows: unknown, signal?: AbortSignal): Promise<ExecutionDraft> {
+  async prepare(agent: object, listingId: string, rows: unknown, signal?: AbortSignal): Promise<ExecutionDraft> {
     const detail = await this.get(listingId, signal)
     if (!detail.available) throw new LoomApiError(409, 'the selected SkillBot is not available')
     const normalizedRows = inputRows(rows)
     validateRows(detail.fields, normalizedRows)
-    const version = listingVersionId === undefined || listingVersionId === '' ? detail.versionId ?? '' : listingVersionId
     const quote = parseQuote(await this.api.request(
       `/marketListings/${encodeURIComponent(listingId)}:quote`,
-      { method: 'POST', body: JSON.stringify({ inputRows: normalizedRows, listingVersionId: version }) },
+      { method: 'POST', body: JSON.stringify({ inputRows: normalizedRows }) },
       signal,
     ))
-    const fingerprint = createHash('sha256').update(canonicalJson({ listingId, version, normalizedRows })).digest('hex')
+    const fingerprint = createHash('sha256').update(canonicalJson({ listingId, normalizedRows })).digest('hex')
     this.prune()
     const draft: StoredDraft = {
       id: `loom-draft-${randomUUID()}`,
@@ -450,7 +892,6 @@ export class LoomSkillbotService {
       skillbot: detail,
       rowCount: normalizedRows.length,
       agent,
-      listingVersionId: version,
       inputRows: normalizedRows,
       fingerprint,
       clientRequestId: `loomloom-dsh-${randomUUID()}`,
@@ -464,11 +905,10 @@ export class LoomSkillbotService {
     this.prune()
     const draft = this.drafts.get(draftId)
     if (draft === undefined || draft.agent !== agent) throw new LoomApiError(404, 'execution draft is unavailable')
-    const currentFingerprint = createHash('sha256').update(canonicalJson({ listingId: draft.skillbot.id, version: draft.listingVersionId, normalizedRows: draft.inputRows })).digest('hex')
+    const currentFingerprint = createHash('sha256').update(canonicalJson({ listingId: draft.skillbot.id, normalizedRows: draft.inputRows })).digest('hex')
     if (draft.fingerprint !== currentFingerprint) throw new LoomApiError(409, 'execution draft integrity check failed')
     const payload = {
       inputRows: draft.inputRows,
-      listingVersionId: draft.listingVersionId,
       clientRequestId: draft.clientRequestId,
       confirm: true,
     }

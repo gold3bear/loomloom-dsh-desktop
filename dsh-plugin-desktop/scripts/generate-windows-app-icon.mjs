@@ -27,7 +27,7 @@ export const WINDOWS_APP_ICON_SIZES = Object.freeze([
 
 const SOURCE_CANVAS_SIZE = 1024
 const SMALL_FRAME_MAX_SIZE = 40
-const BRAND_BLUE = '#4D6BFE'
+const BRAND_BLUE = '#5742EE'
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const sourcePath = join(packageRoot, 'build', 'app-icon.png')

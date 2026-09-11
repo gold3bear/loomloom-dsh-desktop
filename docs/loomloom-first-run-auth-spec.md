@@ -1,5 +1,15 @@
 # Loomloom × DSH Desktop 首次注册、登录与首用规格
 
+## 2026-09-11 回归修正
+
+以下规则优先于本文中要求模型就绪后才能关闭 onboarding 的旧描述：
+
+- 首次引导只以本 Profile 的凭据存在状态判断是否需要登录。已有凭据时完成引导，不等待 Loom/Router 网络探测，不因默认模型缺失而重新弹出登录。
+- 凭据存在不等于服务或模型已就绪；Settings 继续展示完整验证状态。验证失败提供重试，不直接降级为未登录。
+- 点击“打开模型设置”先完成并关闭引导，再打开原生 Models section，避免模态层遮挡设置。模型选择阶段允许稍后处理或 Escape 退出。
+- 登录仍由 Host 验证后统一写入 credentials 引用，前端不接触明文 Key；不修改新授权事务的取消、所有权或回滚规则。
+- 回归覆盖：已保存 Key 时不发远端 bootstrap；无 Key 的首次登录；网络失败；未选默认模型；完成引导后打开模型设置的调用顺序。
+
 ## 1. 目的与完成定义
 
 本规格定义未登录用户从首次启动 DSH Desktop，到注册或登录胜算云、取得经过验证的凭据、创建第一段可用聊天、再发现并使用 Loomloom SkillBot 的完整体验。它补充 [集成规格](loomloom-integration-spec.md) 的身份、模型和客户端章节；若有冲突，以本规格的首次用户流程为准。
@@ -120,7 +130,8 @@ type LoomBootstrap = Readonly<{
 
 - 未配置只返回 `configured:false` 和其他字段 `unknown`，返回 `200`，不是 UI 错误。
 - 已配置时可有界验证状态；网络不可用则返回 `unavailable`，但不删除凭据。
-- Market、runs 和 SkillBot 请求只在 `credential.configured === true` 后发起；`401` 转为可操作的“重新连接胜算云”状态，而非列表加载错误。
+- 店面浏览（`GET /api/loomloom/storefront`）**不需要**登录：它只读取公开 Market 数据，`GET /marketListings/{id}` 本身接受匿名请求。店面页因此不得以 `credential.configured` 作为渲染前提，也不得在首屏等待 `/bootstrap` 或 `/credentials`。
+- runs、报价与执行仍只在 `credential.configured === true` 后发起；`401` 转为可操作的“重新连接胜算云”状态，而非列表加载错误。凭据状态在用户点击“立即调用”时才读取。
 
 ### 5.2 授权会话
 

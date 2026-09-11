@@ -24,7 +24,23 @@
       name: '@deepseek-ai/dsh-authorization'
     - id: loomloom
       name: dsh-plugin-loomloom
-      config: {}
+      config:
+        # The market is this creator's own catalogue, derived on every refresh from
+        # `GET /creators/me/marketListings` with the credential this variable names.
+        # A newly published SkillBot therefore appears with no maintenance.
+        #
+        # The variable is read from the process environment at startup, so it must
+        # be exported where the app is launched, e.g.
+        #   LOOMLOOM_CREATOR_KEY=<creator key> corepack yarn dev
+        # If it is missing the storefront stays empty and says so, rather than
+        # silently falling back to a stale pinned list.
+        #
+        # Only `status: published` + `saleStatus: listed` entries are taken: the
+        # public detail route answers 404 for anything unlisted, so a draft or
+        # withdrawn SkillBot could only ever render as "no longer listed". The
+        # credential is used solely for discovery; every listing detail read is
+        # anonymous.
+        creatorKeyEnv: LOOMLOOM_CREATOR_KEY
     - id: desktop-shell
       name: dsh-plugin-desktop
       config:
