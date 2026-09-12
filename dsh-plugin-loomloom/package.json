@@ -48,7 +48,8 @@
     "build": "node scripts/clean.mjs && tsdown && tsc -p tsconfig.json --emitDeclarationOnly && tsc -p tsconfig.client.json --emitDeclarationOnly",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
     "test": "TSX_TSCONFIG_PATH=tsconfig.tests.json node --import tsx --import ./tests/register-css.mjs --test tests/**/*.spec.ts",
-    "verify": "node --import tsx scripts/verify-loomloom-apis.ts"
+    "verify": "node --import tsx scripts/verify-loomloom-apis.ts",
+    "verify:skill": "node --import tsx scripts/verify-skill-install.ts"
   },
   "dependencies": {
     "@deepseek-ai/dsh-authorization": "0.1.2-rc.1"

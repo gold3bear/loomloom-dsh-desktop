@@ -7,6 +7,7 @@ import {
   type SessionFace,
   type SkillbotSessions,
 } from '../src/client/skillbot-prompt.js'
+import { en, zh } from '../src/client/locales.js'
 
 const TEMPLATE = [
   'Call the cloud SkillBot via the Loomloom tools.',
@@ -244,6 +245,17 @@ test('an empty values object is treated as not filled', () => {
 
   assert.match(prompt, /collect the required ones/u)
   assert.doesNotMatch(prompt, /```json/u)
+})
+
+test('market prompts require the interactive question tool before preparation', () => {
+  for (const prompt of [zh.promptInvocation, en.promptInvocation]) {
+    assert.match(prompt, /loomloom_get_skillbot/u)
+    assert.match(prompt, /ask_user_question/u)
+    assert.match(prompt, /do not call loomloom_prepare_execution before the answers are returned|在答案返回前禁止调用 loomloom_prepare_execution/u)
+    assert.match(prompt, /plain-text question|普通文字代替提问/u)
+  }
+  assert.match(zh.promptNoInput, /必须通过 ask_user_question/u)
+  assert.match(en.promptNoInput, /MUST collect.*ask_user_question/u)
 })
 
 test('every placeholder occurrence is replaced, not just the first', () => {

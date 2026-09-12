@@ -33,11 +33,11 @@ test('a failing route reports failure rather than asking for a model', () => {
 })
 
 test('a verified credential with a verified chat model is connected', () => {
-  assert.equal(connectStage(bootstrap({ modelId: 'deepseek/deepseek-v4-flash', modelReady: true })), 'connected')
+  assert.equal(connectStage(bootstrap({ modelId: 'deepseek-v4-flash', modelReady: true })), 'connected')
 })
 
 test('a chat model on the verified route that is missing from the catalogue asks for a model', () => {
-  assert.equal(connectStage(bootstrap({ modelId: 'deepseek/deepseek-v4-flash', modelReady: false })), 'model-selection')
+  assert.equal(connectStage(bootstrap({ modelId: 'deepseek-v4-flash', modelReady: false })), 'model-selection')
 })
 
 test('a chat model on any other route cannot be judged, so it never blocks onboarding', () => {

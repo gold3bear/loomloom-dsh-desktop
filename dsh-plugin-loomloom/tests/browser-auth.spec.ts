@@ -11,7 +11,7 @@ test('verifies a browser-exchanged credential against Loom and the fixed ShengSu
     calls.push({ endpoint, authorization: new Headers(init?.headers).get('authorization') ?? '' })
     return new Response(JSON.stringify(endpoint.includes('loomloom.shengsuanyun.com')
       ? { items: [] }
-      : { data: [{ id: 'deepseek/deepseek-v4-flash' }] }), { status: 200 })
+      : { data: [{ id: 'deepseek-v4-flash' }] }), { status: 200 })
   }
   try {
     await verifyBrowserCredential('browser-only-secret', resolveLoomConfig(), new AbortController().signal)

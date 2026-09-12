@@ -55,7 +55,7 @@
 
 1. 桌面 patch 预置 `llm-pi-ai` 的 `shengsuanyun` Provider，并为 `agent-default-model` 设置组合默认值；使用 OpenAI Completions 协议和 `https://router.shengsuanyun.com/api/v1`。
 2. 将通用 Key 只存到 `SHENGSUANYUN_API_KEY`；Loomloom 和 Provider 都按请求解析同一 reference，页面不读取或回显 Key。
-3. 每次 Loomloom 登录成功后调用 DSH `agentDefaultModel.saveSelection()`，将**新建**聊天默认模型保存为 `deepseek/deepseek-v4-flash`；用户之后可在 DSH 模型设置中改选，已有会话维持其当前模型选择。
+3. 每次 Loomloom 登录成功后调用 DSH `agentDefaultModel.saveSelection()`，将**新建**聊天默认模型保存为 `deepseek-v4-flash`；用户之后可在 DSH 模型设置中改选，已有会话维持其当前模型选择。
 4. 通过无计费 `GET /models` 验证 Key 和模型目录，再发送一条人工 DSH 聊天 smoke。不得把浏览器 OAuth code、Cookie 或未经验证的登录 token 直接当作模型 Key。
 
 **完成标准**：胜算云控制台创建的一把 Key 同时显示为 Loomloom 已登录和 `shengsuanyun` Provider 已配置；新建 DSH Chat / Agent 能使用选定模型回复。

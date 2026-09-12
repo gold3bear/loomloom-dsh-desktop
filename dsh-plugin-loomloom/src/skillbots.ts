@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { setTimeout as scheduleTimeout } from 'node:timers/promises'
 import { LoomApi, LoomApiError } from './loom-api.js'
+import { findInstalledSkillPackage, installSkillPackage, normalizeArchiveHash, type SkillPackageInstallResult } from './skill-package.js'
 import { capArtifactText } from './result-presentation.js'
 
 const MAX_INPUT_ROWS = 100
@@ -259,6 +260,16 @@ export interface WorkbookDownload {
   readonly byteLength: number
   readonly contentType: string
   readonly filename: string
+}
+
+/** Head of a listing's backend-published Agent Skill package. */
+export interface SkillPackageSummary {
+  readonly available: boolean
+  readonly archiveHash: string
+  readonly versionId?: string
+  readonly mode?: string
+  readonly sizeBytes?: number
+  readonly unavailableReason?: string
 }
 
 export interface DraftToolValue {
@@ -737,6 +748,48 @@ export class LoomSkillbotService {
     if (!ID_PATTERN.test(templateId)) throw new LoomApiError(400, 'invalid templateId')
     const binary = await this.api.requestBinary(`/officialTemplates/${encodeURIComponent(templateId)}/workbook`, {}, signal)
     return { base64: binary.base64, byteLength: binary.byteLength, contentType: binary.contentType, filename: binary.filename ?? `${templateId}.xlsx` }
+  }
+
+  async getSkillPackage(listingId: string, signal?: AbortSignal): Promise<SkillPackageSummary> {
+    if (!ID_PATTERN.test(listingId)) throw new LoomApiError(400, 'invalid listingId')
+    const payload = asRecord(await this.api.request(`/marketListings/${encodeURIComponent(listingId)}/skillPackage`, {}, signal))
+    const archiveHash = pickText(payload, ['archiveHash', 'archive_hash'])
+    const versionId = pickText(payload, ['skillPackageVersionId', 'skill_package_version_id'])
+    const mode = pickText(payload, ['mode'])
+    const reason = pickText(payload, ['unavailableReason', 'unavailable_reason'])
+    const size = payload.sizeBytes ?? payload.size_bytes
+    return {
+      available: payload.available === true,
+      archiveHash,
+      ...(versionId === '' ? {} : { versionId }),
+      ...(mode === '' ? {} : { mode }),
+      ...(typeof size === 'number' && Number.isFinite(size) ? { sizeBytes: size } : {}),
+      ...(reason === '' ? {} : { unavailableReason: reason }),
+    }
+  }
+
+  async downloadSkillPackage(listingId: string, signal?: AbortSignal): Promise<{ readonly archive: Buffer, readonly summary: SkillPackageSummary }> {
+    const summary = await this.getSkillPackage(listingId, signal)
+    if (!summary.available) throw new LoomApiError(409, `skill package is unavailable${summary.unavailableReason === undefined ? '' : `: ${summary.unavailableReason}`}`)
+    const binary = await this.api.requestBinary(`/marketListings/${encodeURIComponent(listingId)}/skillPackage/archive`, {}, signal)
+    const archive = Buffer.from(binary.base64, 'base64')
+    if (summary.archiveHash !== '') {
+      const actualHash = createHash('sha256').update(archive).digest('hex')
+      if (normalizeArchiveHash(summary.archiveHash) !== actualHash) throw new LoomApiError(502, 'skill package archive does not match the published hash')
+    }
+    return { archive, summary }
+  }
+
+  async installSkill(listingId: string, skillRoot: string, signal?: AbortSignal): Promise<SkillPackageInstallResult> {
+    if (!ID_PATTERN.test(listingId)) throw new LoomApiError(400, 'invalid listingId')
+    const summary = await this.getSkillPackage(listingId, signal)
+    if (!summary.available) throw new LoomApiError(409, `skill package is unavailable${summary.unavailableReason === undefined ? '' : `: ${summary.unavailableReason}`}`)
+    const sourceRef = `market:${listingId}`
+    const installed = await findInstalledSkillPackage(skillRoot, sourceRef, summary.archiveHash)
+    if (installed !== undefined) return installed
+    const binary = await this.api.requestBinary(`/marketListings/${encodeURIComponent(listingId)}/skillPackage/archive`, {}, signal)
+    const archive = Buffer.from(binary.base64, 'base64')
+    return await installSkillPackage({ skillRoot, sourceRef, archiveHash: summary.archiveHash, archive })
   }
 
   /**

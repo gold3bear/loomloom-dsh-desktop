@@ -29,7 +29,7 @@ test('registers a DSH secret prompt that persists the common ShengSuanYun creden
       async set(ref: unknown, value: unknown): Promise<void> { stored = { ref, value } },
     },
   }
-  globalThis.fetch = async (input) => new Response(JSON.stringify(String(input).includes('/models') ? { data: [{ id: 'deepseek/deepseek-v4-flash' }] } : { items: [] }), { status: 200 })
+  globalThis.fetch = async (input) => new Response(JSON.stringify(String(input).includes('/models') ? { data: [{ id: 'deepseek-v4-flash' }] } : { items: [] }), { status: 200 })
   const dispose = registerLoomAuthorization(context as never, resolveLoomConfig())
   assert.equal(flow?.label, 'Loomloom / 胜算云')
   assert.deepEqual(flow?.methods, [
@@ -47,7 +47,7 @@ test('registers a DSH secret prompt that persists the common ShengSuanYun creden
     })
   } finally { globalThis.fetch = originalFetch }
   assert.deepEqual(stored, { ref: 'SHENGSUANYUN_API_KEY', value: 'test-token' })
-  assert.deepEqual(selection, { provider: 'shengsuanyun', model: 'deepseek/deepseek-v4-flash' })
+  assert.deepEqual(selection, { provider: 'shengsuanyun', model: 'deepseek-v4-flash' })
   dispose()
   assert.equal(disposed, true)
 })

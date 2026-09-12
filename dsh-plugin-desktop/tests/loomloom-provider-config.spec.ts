@@ -11,6 +11,11 @@ describe('Loomloom default LLM provider', () => {
     expect(patch).toContain('baseURL: https://router.shengsuanyun.com/api/v1')
     expect(patch).toContain('- id: agent-default-model')
     expect(patch).toContain('provider: shengsuanyun')
-    expect(patch).toContain('model: deepseek/deepseek-v4-flash')
+    expect(patch).toContain('model: deepseek-v4-flash')
+  })
+
+  it('disables the native DeepSeek provider while retaining the pi-ai provider surface', () => {
+    expect(patch).toMatch(/- id: llm-deepseek\s+disabled: true/u)
+    expect(patch).toContain('- id: llm-pi-ai')
   })
 })

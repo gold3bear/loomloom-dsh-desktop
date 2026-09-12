@@ -26,14 +26,14 @@ test('bootstrap verifies both services and the selected model without exposing t
   const secret = 'bootstrap-secret'
   globalThis.fetch = async input => new Response(JSON.stringify(
     String(input).includes('/models')
-      ? { data: [{ id: 'deepseek/deepseek-v4-flash' }] }
+      ? { data: [{ id: 'deepseek-v4-flash' }] }
       : { items: [] },
   ), { status: 200 })
   const read = createLoomBootstrapReader(
     {
       get(name: string) {
         return name === 'agentDefaultModel'
-          ? { currentSelection: () => ({ provider: 'shengsuanyun', model: 'deepseek/deepseek-v4-flash' }) }
+          ? { currentSelection: () => ({ provider: 'shengsuanyun', model: 'deepseek-v4-flash' }) }
           : undefined
       },
     } as never,
@@ -48,7 +48,7 @@ test('bootstrap verifies both services and the selected model without exposing t
       credential: { configured: true },
       loom: 'ready',
       router: 'ready',
-      model: { provider: 'shengsuanyun', id: 'deepseek/deepseek-v4-flash', ready: true },
+      model: { provider: 'shengsuanyun', id: 'deepseek-v4-flash', ready: true },
     })
     assert.equal(JSON.stringify(result).includes(secret), false)
   } finally {

@@ -91,7 +91,7 @@ Agent：已唤起 SkillBot（runId=...）；完成后返回 3 条文案和结果
 
 ## 6.5 胜算云模型 Provider 与 DSH 聊天
 
-桌面 bundle 已按胜算云的官方 DSH 配置预置 `llm-pi-ai` Provider `shengsuanyun`：协议为 `openai-completions`，Base URL 为 `https://router.shengsuanyun.com/api/v1`，默认模型为 `deepseek/deepseek-v4-flash`。该 Provider 的 `apiKeyEnv` 是 `SHENGSUANYUN_API_KEY`，与 Loomloom 默认 `tokenRef` 相同；每次请求由 DSH `credentials` 服务解析，不从旧的 DSH 配置文件读取密钥。成功 Loomloom 登录后，Host 会调用 DSH `agentDefaultModel.saveSelection()` 保存该模型给**新建**聊天，因此旧的 `agent-default-model` user settings 不会继续把聊天留在 `deepseek-official`。用户之后仍可在「设置 → 模型」改选模型或覆盖路由，但不应再次粘贴密钥。
+桌面 bundle 已按胜算云的官方 DSH 配置预置 `llm-pi-ai` Provider `shengsuanyun`：协议为 `openai-completions`，Base URL 为 `https://router.shengsuanyun.com/api/v1`，默认模型为 `deepseek-v4-flash`。该 Provider 的 `apiKeyEnv` 是 `SHENGSUANYUN_API_KEY`，与 Loomloom 默认 `tokenRef` 相同；每次请求由 DSH `credentials` 服务解析，不从旧的 DSH 配置文件读取密钥。成功 Loomloom 登录后，Host 会调用 DSH `agentDefaultModel.saveSelection()` 保存该模型给**新建**聊天，因此旧的 `agent-default-model` user settings 不会继续把聊天留在 `deepseek-official`。用户之后仍可在「设置 → 模型」改选模型或覆盖路由，但不应再次粘贴密钥。
 
 用户通过 Loomloom 登录获得胜算云 API Key 后，新建 DSH Chat / Agent 默认使用该 Provider 和模型。模型选择和 Market 登录都先验证各自 endpoint 的授权，不能因为一端成功便假定另一端已授权；旧会话不被静默改写。
 

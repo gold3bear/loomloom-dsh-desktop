@@ -170,9 +170,41 @@ CLI 渲染 `estimatedBuyerPayable`/`estimatedBuyerPayableT`、`taskFixedFee`/`ta
 
 工作簿路由上的 `content` 是 base64 字节，与 Go CLI 的 `[]byte` JSON 编码完全一致，因此同一套上游契约同时服务两种客户端。
 
+## Skill 包安装
+
+Market 上架还可以附带一个后端发布的 Agent Skill 包：一个 ZIP，内含完整技能（带 frontmatter 的 `SKILL.md`，以及 references 与 scripts）。安装它可让本地 agent 直接使用该技能，而不必走网络调用 SkillBot。上游契约（对照官方 CLI）是两个端点：
+
+| 端点 | 返回 |
+| --- | --- |
+| `GET /marketListings/{id}/skillPackage` | 头部：`available`、`archiveHash`、`mode`、`sizeBytes`、`skillPackageVersionId`、`unavailableReason` |
+| `GET /marketListings/{id}/skillPackage/archive` | ZIP 字节（`application/zip`） |
+
+安装语义（对照官方 `InstallPackage`）：
+
+- 下载的 archive 必须与已发布的 `sha256:<hex>` 一致（`normalizeArchiveHash` 接受 `sha256:` 前缀），否则不落盘任何内容。
+- 解压时校验形态：恰好一个顶层目录；其根下必须有以 frontmatter 开头的 `SKILL.md`；`SKILL.md` 不超过 500 KiB；archive 不超过 10 MiB。
+- 条目名若为绝对路径、带盘符，或含 `.`/`..` 段则拒绝，恶意 archive 无法逃出技能根目录。
+- archive 先在技能根内的临时目录暂存，再 rename 就位；升级时把旧版本改名让位，rename 失败则回滚，因此崩溃不会留下半成品。
+- `.loomloom-skill.json` marker 记录 `schemaVersion`、`source`（`market:<listing-id>`）与 `archiveHash`。`findInstalledSkillPackage` 读取它，使同源同 hash 的重复安装直接短路为 `unchanged`，不再下载。
+- 卸载只删除带有效 marker 的目录，技能根里的无关文件夹绝不会被误删。
+- 目标根为 `<DSH_HOME>/skills`（回退到 `~/.loomloom/skills`），由宿主环境推导而非来自请求，客户端无法自选写入目标。
+
+ZIP 读取器基于 `node:zlib`（`inflateRawSync`）手写，而非引入新依赖。后端发布的是 stored 与 deflate 条目且无 ZIP64，正好是被覆盖的子集；遇到 ZIP64 会明确报错而非错误解析。这样插件的依赖列表保持不变，也无需改动 lockfile。
+
+这些路由承载 ZIP 与文件系统路径，因此与工作簿流程一样留在 host 路由层，不作为模型可见工具：
+
+| 路由 | 行为 |
+| --- | --- |
+| `GET /api/loomloom/skill-package` | 包头部 |
+| `GET /api/loomloom/skill-package/archive` | 校验后的 ZIP 下载 |
+| `POST /api/loomloom/skill-package/install` | 校验、解压并安装 |
+| `POST /api/loomloom/skill-package/uninstall` | 按 `skillName` 卸载 |
+| `GET /api/loomloom/skill-package/installed` | 列出已安装 marker |
+
 ## 文件
 
-- [`dsh-plugin-loomloom/src/skillbots.ts`](../../../../dsh-plugin-loomloom/src/skillbots.ts) —— 解析：`money()`/`RAW_UNITS_PER_CURRENCY`、候选字段名收敛为官方键、`inlineText`，以及 `getBalance`、`listMyListings`、`listCreatorTransactions`、`publishListing`、`listOfficialTemplates`、`getTemplateSchema`、`listMyTemplates`、`downloadMarketWorkbook`、`downloadTemplateWorkbook`、`uploadOrchestrationInput`。
+- [`dsh-plugin-loomloom/src/skill-package.ts`](../../../../dsh-plugin-loomloom/src/skill-package.ts) —— ZIP 读取、安装、幂等、卸载、列举和默认根目录辅助函数。
+- [`dsh-plugin-loomloom/src/skillbots.ts`](../../../../dsh-plugin-loomloom/src/skillbots.ts) —— 解析：`money()`/`RAW_UNITS_PER_CURRENCY`、候选字段名收敛为官方键、`inlineText`，以及 Market、模板、工作簿和 Skill 包服务。
 - [`dsh-plugin-loomloom/src/loom-api.ts`](../../../../dsh-plugin-loomloom/src/loom-api.ts) —— 工作簿下载用的 `requestBinary`，以及从上游 `Content-Disposition` 中剥离路径分隔符的 `suggestedFilename`。
 - [`dsh-plugin-loomloom/src/tools.ts`](../../../../dsh-plugin-loomloom/src/tools.ts) —— 共 13 个工具；两个结果类工具均渲染 `inlineText`。
 - [`dsh-plugin-loomloom/src/routes.ts`](../../../../dsh-plugin-loomloom/src/routes.ts) —— 创作者/模板/工作簿 host 路由；`forwardWorkbookTo` 由市场与官方模板两套工作簿动作共用。
@@ -180,6 +212,9 @@ CLI 渲染 `estimatedBuyerPayable`/`estimatedBuyerPayableT`、`taskFixedFee`/`ta
 - [`dsh-plugin-loomloom/tests/tools.spec.ts`](../../../../dsh-plugin-loomloom/tests/tools.spec.ts) —— 工具清单、`inlineText` 外显、余额/创作者/模板工具、发布时的 `taskFixedFeeT` 换算。
 - [`dsh-plugin-loomloom/tests/routes.spec.ts`](../../../../dsh-plugin-loomloom/tests/routes.spec.ts) —— 路由转发、非法 id 拒绝、二进制回传、base64 上传、工作簿执行的确认要求、模板预检不带 `confirm`。
 - [`dsh-plugin-loomloom/tests/loom-api.spec.ts`](../../../../dsh-plugin-loomloom/tests/loom-api.spec.ts) —— `requestBinary` 解码、文件名净化、失败状态。
+- [`dsh-plugin-loomloom/tests/skill-package.spec.ts`](../../../../dsh-plugin-loomloom/tests/skill-package.spec.ts) —— ZIP 解析、hash 校验、压缩包安全、形态校验、安装、升级、幂等、卸载和列举。
+- [`dsh-plugin-loomloom/tests/support/zip.ts`](../../../../dsh-plugin-loomloom/tests/support/zip.ts) —— 测试使用的极简 ZIP 构造器。
+- [`dsh-plugin-loomloom/scripts/verify-skill-install.ts`](../../../../dsh-plugin-loomloom/scripts/verify-skill-install.ts) —— 安装链路线上端到端验证。
 
 ## 验证
 
@@ -187,6 +222,7 @@ CLI 渲染 `estimatedBuyerPayable`/`estimatedBuyerPayableT`、`taskFixedFee`/`ta
 - `corepack yarn typecheck` 对 `tsconfig.json` 与 `tsconfig.client.json` 均通过。
 - 手工核对：一次已完成的运行，其 `loomloom_get_run_results` 的 render 应包含每个产物正文，而非只有计数。
 - 已对 `loomloom.shengsuanyun.com` 做过线上形态探测，确认了本note 记录的读取端点：`/users/me/balance` 返回 `availableBalance` 与 `availableBalanceT`；`/officialTemplates` 的行包在 `items` 里；`/users/me/templates` 返回 `items` 且含 `latestVersionId`/`publishedVersionId`；`/creators/me/marketListings` 返回 `items`。
+- `yarn workspace dsh-plugin-loomloom verify:skill` 在临时技能根内验证包头部、hash 校验、安装、marker、二次安装幂等、列举与卸载。
 - 尚未对线上上游验证：写入路径（`publishListing`、两套工作簿动作与 `orchestrationInputs:upload`）目前只用 fixture 验证过，因为本会话没有真实发布或填写工作簿。请把第一次线上调用视为确认。
 
 ## 备选方案

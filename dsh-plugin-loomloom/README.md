@@ -6,7 +6,7 @@ This package is the DSH Host integration replacing the legacy Loomloom Go sideca
 
 - Uses an HTTPS-only Loomloom API origin (default: `https://loomloom.shengsuanyun.com/loom/v1`).
 - Resolves the common ShengSuanYun platform key through DSH `credentials` for every upstream request. The default reference is `SHENGSUANYUN_API_KEY`, matching the DSH Models UI provider id `shengsuanyun`; no token is returned to a Client or logged.
-- Preconfigures the `shengsuanyun` `llm-pi-ai` route in DSH Desktop. Every successful Loomloom login saves `deepseek/deepseek-v4-flash` through DSH's `agentDefaultModel` service, so newly created chats use the same credential without reading a local provider-key field.
+- Preconfigures the `shengsuanyun` `llm-pi-ai` route in DSH Desktop. Every successful Loomloom login saves `deepseek-v4-flash` through DSH's `agentDefaultModel` service, so newly created chats use the same credential without reading a local provider-key field.
 - Registers six DSH-native chat tools for discovery, schema inspection, quote-backed preparation, approval-gated execution, run status, and safe result retrieval.
 - **The Market surface never executes anything.** Clicking a SkillBot — or submitting its preview form — performs a ShengSuanYun credential check and then puts **one user message** into a **new conversation in the same workspace group**; the agent drives the tools from there. That keeps a single path to a paid run, a single place its result is reported, and a run that owns its own transcript instead of being appended to whatever thread the user was reading. (`resolveSendTarget` accepts `target: 'current-session'` for callers that genuinely want to continue a thread.) Sending only happens once the credential is present: an unconfigured account gets the sign-in surface first, and the deferred call resumes automatically the moment authorization completes.
 - Each storefront row carries a **preview** control that opens the SkillBot's published input form (widgets, hints, defaults, enums, ordering, file inputs). Values filled there travel with the message as a JSON block; a bare row click sends the prompt with an explicit "nothing filled in yet" sentence so the agent never has to guess. Preview itself needs no request: the storefront payload already carries the parsed schema.
@@ -104,3 +104,41 @@ Three tools change state and are gated by the DSH approval prompt:
 
 Workbook (`.xlsx`) flows are not tools. A tool result is text, so a workbook cannot cross that boundary; the client drives them through host routes instead: `GET /api/loomloom/market/workbook` and `GET /api/loomloom/templates/workbook` download a template, and `POST /api/loomloom/market/workbook/{validate,quote,run}` and `POST /api/loomloom/templates/workbook/{validate,precheck}` submit a filled one. Only the Market `run` route is billable, and it always sends `confirm: true` with an idempotency key.
 
+## Installing a SkillBot as a local agent skill
+
+A Market listing can ship a backend-published Agent Skill package: a ZIP holding a
+complete skill (`SKILL.md` plus references and scripts). Installing one makes the skill
+available to a local agent instead of calling the SkillBot over the network.
+
+Five host routes expose it, and none of them is a model-visible tool because the payload
+is a ZIP and a filesystem path:
+
+| Route | Behaviour |
+| --- | --- |
+| `GET /api/loomloom/skill-package?listingId=` | Package head: `available`, `archiveHash`, `mode`, `sizeBytes` |
+| `GET /api/loomloom/skill-package/archive?listingId=` | Download the ZIP, verified against the published hash |
+| `POST /api/loomloom/skill-package/install?listingId=` | Verify, unpack and install into the skill root |
+| `POST /api/loomloom/skill-package/uninstall` | Remove an installed skill (body: `{ skillName }`) |
+| `GET /api/loomloom/skill-package/installed` | List installed packages from their markers |
+
+Install semantics:
+
+- Packages land in `<DSH_HOME>/skills` (falling back to `~/.loomloom/skills`). The path
+  comes from the host environment, never from the request, so a client cannot choose a
+  write target.
+- The downloaded ZIP must match the published `sha256:<hex>` before anything is written.
+- The archive is staged inside the skill root and renamed into place, so a crash leaves
+  either the previous version or nothing, never a half-written skill.
+- Each install writes a `.loomloom-skill.json` marker (`schemaVersion`, `source`,
+  `archiveHash`). A repeat install of the same source and hash reports `unchanged` and
+  does not re-download.
+- Uninstall only removes directories carrying a valid marker, so an unrelated folder in
+  the skill root is never deleted.
+
+Verify the whole path against a live account (nothing is written outside a temporary
+directory):
+
+```bash
+yarn workspace dsh-plugin-loomloom verify:skill
+# or: node --import tsx scripts/verify-skill-install.ts --listing <listing-id>
+```

@@ -1,7 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 
 export const SHENGSUANYUN_PROVIDER = 'shengsuanyun'
-export const SHENGSUANYUN_DEFAULT_MODEL = 'deepseek/deepseek-v4-flash'
+export const SHENGSUANYUN_DEFAULT_MODEL = 'deepseek-v4-flash'
 
 interface AgentDefaultModelService {
   currentSelection(): {

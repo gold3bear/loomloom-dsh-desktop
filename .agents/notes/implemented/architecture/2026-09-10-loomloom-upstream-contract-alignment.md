@@ -170,9 +170,41 @@ Workbooks do not cross the tool boundary because a DSH tool result is text; a fi
 
 `content` on the workbook routes is base64 bytes, matching the Go CLI's `[]byte` JSON encoding exactly, so the same upstream contract serves both clients.
 
+## Skill package install
+
+A Market listing may also ship a backend-published Agent Skill package: a ZIP holding a complete skill (`SKILL.md` with frontmatter, plus references and scripts). Installing it makes the skill available to a local agent instead of reaching the SkillBot over the network. The upstream contract, mirrored from the official CLI, is two endpoints:
+
+| Endpoint | Returns |
+| --- | --- |
+| `GET /marketListings/{id}/skillPackage` | Head: `available`, `archiveHash`, `mode`, `sizeBytes`, `skillPackageVersionId`, `unavailableReason` |
+| `GET /marketListings/{id}/skillPackage/archive` | The ZIP bytes (`application/zip`) |
+
+Install semantics, mirroring the official `InstallPackage`:
+
+- The downloaded archive must match the published `sha256:<hex>` (`normalizeArchiveHash` accepts the `sha256:` prefix) before anything is written.
+- Extraction validates the shape: exactly one top-level directory, a `SKILL.md` at its root that starts with frontmatter, `SKILL.md` under 500 KiB, archive under 10 MiB.
+- Entry names are rejected when absolute, drive-lettered, or containing `.`/`..` segments, so a hostile archive cannot escape the skill root.
+- The archive is staged in a temp directory inside the skill root and renamed into place; an upgrade renames the previous version aside and restores it if the rename fails, so a crash never leaves a half-written skill.
+- A `.loomloom-skill.json` marker records `schemaVersion`, `source` (`market:<listing-id>`) and `archiveHash`. `findInstalledSkillPackage` reads it so a repeat install of the same source and hash short-circuits to `unchanged` without downloading again.
+- Uninstall removes only a directory carrying a valid marker, so an unrelated folder in the skill root is never deleted.
+- The target root is `<DSH_HOME>/skills` (falling back to `~/.loomloom/skills`), derived from the host environment rather than the request, so a client cannot choose a write target.
+
+The ZIP reader is hand-written on `node:zlib` (`inflateRawSync`) rather than a new dependency. The backend publishes stored and deflate entries and no ZIP64, which is exactly the covered subset; a ZIP64 archive is rejected with a clear error instead of being mis-parsed. This keeps the plugin's dependency list unchanged and avoids a lockfile change.
+
+These routes carry a ZIP and a filesystem path, so like the workbook flows they stay in the host route layer and are not model-visible tools:
+
+| Route | Behaviour |
+| --- | --- |
+| `GET /api/loomloom/skill-package` | Package head |
+| `GET /api/loomloom/skill-package/archive` | Verified ZIP download |
+| `POST /api/loomloom/skill-package/install` | Verify, unpack and install |
+| `POST /api/loomloom/skill-package/uninstall` | Remove by `skillName` |
+| `GET /api/loomloom/skill-package/installed` | List installed markers |
+
 ## Files
 
-- [`dsh-plugin-loomloom/src/skillbots.ts`](../../../../dsh-plugin-loomloom/src/skillbots.ts) — parsing: `money()`/`RAW_UNITS_PER_CURRENCY`, candidate names collapsed to official keys, `inlineText`, plus `getBalance`, `listMyListings`, `listCreatorTransactions`, `publishListing`, `listOfficialTemplates`, `getTemplateSchema`, `listMyTemplates`, `downloadMarketWorkbook`, `downloadTemplateWorkbook`, `uploadOrchestrationInput`.
+- [`dsh-plugin-loomloom/src/skill-package.ts`](../../../../dsh-plugin-loomloom/src/skill-package.ts) — the ZIP reader and install, idempotency, uninstall, listing, and default-root helpers.
+- [`dsh-plugin-loomloom/src/skillbots.ts`](../../../../dsh-plugin-loomloom/src/skillbots.ts) — parsing: `money()`/`RAW_UNITS_PER_CURRENCY`, candidate names collapsed to official keys, `inlineText`, plus the Market, template, workbook, and Skill Package services.
 - [`dsh-plugin-loomloom/src/loom-api.ts`](../../../../dsh-plugin-loomloom/src/loom-api.ts) — `requestBinary` for workbook downloads plus `suggestedFilename`, which strips path separators from the upstream `Content-Disposition`.
 - [`dsh-plugin-loomloom/src/tools.ts`](../../../../dsh-plugin-loomloom/src/tools.ts) — 13 tools; both result tools render `inlineText`.
 - [`dsh-plugin-loomloom/src/routes.ts`](../../../../dsh-plugin-loomloom/src/routes.ts) — creator/template/workbook host routes; `forwardWorkbookTo` is shared by the Market and official-template workbook actions.
@@ -180,6 +212,9 @@ Workbooks do not cross the tool boundary because a DSH tool result is text; a fi
 - [`dsh-plugin-loomloom/tests/tools.spec.ts`](../../../../dsh-plugin-loomloom/tests/tools.spec.ts) — tool roster, `inlineText` rendering, balance/creator/template tools, `taskFixedFeeT` conversion on publish.
 - [`dsh-plugin-loomloom/tests/routes.spec.ts`](../../../../dsh-plugin-loomloom/tests/routes.spec.ts) — route forwarding, id rejection, binary streaming, base64 upload, workbook-run confirmation, template precheck without `confirm`.
 - [`dsh-plugin-loomloom/tests/loom-api.spec.ts`](../../../../dsh-plugin-loomloom/tests/loom-api.spec.ts) — `requestBinary` decoding, filename sanitization, failure status.
+- [`dsh-plugin-loomloom/tests/skill-package.spec.ts`](../../../../dsh-plugin-loomloom/tests/skill-package.spec.ts) — ZIP parsing, hash verification, archive safety, validation, install, upgrade, idempotency, uninstall, and listing.
+- [`dsh-plugin-loomloom/tests/support/zip.ts`](../../../../dsh-plugin-loomloom/tests/support/zip.ts) — a minimal ZIP builder used by the tests.
+- [`dsh-plugin-loomloom/scripts/verify-skill-install.ts`](../../../../dsh-plugin-loomloom/scripts/verify-skill-install.ts) — live end-to-end verification of the install path.
 
 ## Verification
 
@@ -187,6 +222,7 @@ Workbooks do not cross the tool boundary because a DSH tool result is text; a fi
 - `corepack yarn typecheck` passes for both `tsconfig.json` and `tsconfig.client.json`.
 - Manual check: a completed run's `loomloom_get_run_results` render contains each artifact body, not only a count.
 - Live shape probe against `loomloom.shengsuanyun.com` confirmed the read endpoints this note documents: `/users/me/balance` returns `availableBalance` plus `availableBalanceT`, `/officialTemplates` wraps its rows in `items`, `/users/me/templates` returns `items` with `latestVersionId`/`publishedVersionId`, and `/creators/me/marketListings` returns `items`.
+- `yarn workspace dsh-plugin-loomloom verify:skill` exercises package head, hash verification, install, marker, idempotent reinstall, listing, and uninstall inside a temporary skill root.
 - Not yet verified against the live upstream: the write paths (`publishListing`, both workbook actions and `orchestrationInputs:upload`) have only been exercised against fixtures, because no creator publish or filled workbook was performed in this session. Treat the first live call as the confirmation.
 
 ## Alternatives considered

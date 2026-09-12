@@ -26,7 +26,7 @@
 
 ## 2. 当前实现与缺口
 
-现有 `dsh-plugin-loomloom` 已提供安全基础：随机 loopback 端口、PKCE S256、state、一次 callback、5 分钟浏览器授权超时、10 分钟短时会话，以及将 Token 写入 DSH credentials 的 Host-only 流程。桌面 bundle 也已预置 `shengsuanyun` Provider，并将 `deepseek/deepseek-v4-flash` 配为首选模型。
+现有 `dsh-plugin-loomloom` 已提供安全基础：随机 loopback 端口、PKCE S256、state、一次 callback、5 分钟浏览器授权超时、10 分钟短时会话，以及将 Token 写入 DSH credentials 的 Host-only 流程。桌面 bundle 也已预置 `shengsuanyun` Provider，并将 `deepseek-v4-flash` 配为首选模型。
 
 但首次用户不能稳定完成闭环，原因如下：
 
@@ -165,7 +165,7 @@ type BrowserLoginStatus = Readonly<{
 
 1. 调用受限 Loom endpoint（当前 `/users/me/runs?pageSize=1`）确认 Loom API 可用；
 2. 使用同一 Key 对固定 `https://router.shengsuanyun.com/api/v1/models` 发出 `GET`，限制响应体大小、校验 JSON 结构，并筛出兼容 chat-completions 的模型；
-3. 若预置 `deepseek/deepseek-v4-flash` 存在且可聊天，选择它；否则进入 `model-selection-required`，通过 DSH 已有 Models section（`openSection('models')` 与 `llm/discoverModels`）让用户至少保存一个发现的胜算云模型；
+3. 若预置 `deepseek-v4-flash` 存在且可聊天，选择它；否则进入 `model-selection-required`，通过 DSH 已有 Models section（`openSection('models')` 与 `llm/discoverModels`）让用户至少保存一个发现的胜算云模型；
 4. 仅当 Loom 和 Router 均通过验证后，才调用 `storeLoomToken()`；默认模型选择成功后才将会话置为 `complete`。
 
 若模型选择需要先保存 Key 才能让 DSH Models section 发现模型，保存后状态必须仍为 `model-selection-required`，不是 `complete`；退出、失败或超过限定时间要清除这次事务新写入的 Key，不能覆盖用户原有的已验证 Key。保留和恢复已有 Key 的规则必须以 credential revision/session ownership 判断，绝不按字符串比较 Key。

@@ -42,7 +42,7 @@ test('browser login persists a verified credential without exposing it through s
       if (String(input).startsWith('https://loomloom.shengsuanyun.com/loom/v1/')) {
         return new Response(JSON.stringify({ items: [] }), { status: 200 })
       }
-      return new Response(JSON.stringify({ data: [{ id: 'deepseek/deepseek-v4-flash' }] }), { status: 200 })
+      return new Response(JSON.stringify({ data: [{ id: 'deepseek-v4-flash' }] }), { status: 200 })
     }
 
     const callback = new URL(new URL(started.url).searchParams.get('callback_url')!)
@@ -57,7 +57,7 @@ test('browser login persists a verified credential without exposing it through s
     assert.deepEqual(service.status(started.sessionId), { state: 'complete' })
     assert.equal(JSON.stringify(service.status(started.sessionId)).includes(secret), false)
     assert.deepEqual(writes, [{ ref: 'SHENGSUANYUN_API_KEY', value: secret }])
-    assert.deepEqual(selections, [{ provider: 'shengsuanyun', model: 'deepseek/deepseek-v4-flash' }])
+    assert.deepEqual(selections, [{ provider: 'shengsuanyun', model: 'deepseek-v4-flash' }])
   } finally {
     globalThis.fetch = nativeFetch
     service.dispose()

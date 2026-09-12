@@ -9,6 +9,8 @@ import type { StorefrontCache } from './storefront-cache.js'
 import type { StorefrontSource } from './storefront.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { LoomApi, LoomApiError, sanitizeDownloadFilename } from './loom-api.js'
+import { listInstalledSkillPackages, uninstallSkillPackage } from './skill-package.js'
+import type { LoomSkillbotService } from './skillbots.js'
 
 const PREFIX = '/api/loomloom'
 const ID_PATTERN = /^[A-Za-z0-9._-]{1,200}$/
@@ -249,6 +251,9 @@ export interface LoomRouteExtras {
    * credential rather than guessing why the market is empty.
    */
   readonly storefrontSource?: StorefrontSource
+  /** Optional SkillBot package service and local install root. */
+  readonly skillbots?: LoomSkillbotService
+  readonly skillRoot?: () => string
 }
 
 export function registerLoomRoutes(
@@ -537,6 +542,42 @@ export function registerLoomRoutes(
       if (req.method !== 'POST' || !requireOrigin(req, res)) return
       await forwardWorkbookAction(req, res, api, ':executeWorkbook', 'execute', quoteDrafts)
     }),
+    ...(extras.skillbots !== undefined && extras.skillRoot !== undefined ? [
+      register(`${PREFIX}/skill-package`, async (req, res) => {
+        if (req.method !== 'GET' || !requireOrigin(req, res)) return
+        const listingId = new URL(req.url ?? '/', 'http://localhost').searchParams.get('listingId')
+        if (listingId === null || !ID_PATTERN.test(listingId)) { sendJson(res, 400, { error: 'invalid listingId' }); return }
+        try { sendJson(res, 200, await extras.skillbots!.getSkillPackage(listingId)) } catch (cause) { apiFailure(res, cause) }
+      }),
+      register(`${PREFIX}/skill-package/archive`, async (req, res) => {
+        if (req.method !== 'GET' || !requireOrigin(req, res)) return
+        const listingId = new URL(req.url ?? '/', 'http://localhost').searchParams.get('listingId')
+        if (listingId === null || !ID_PATTERN.test(listingId)) { sendJson(res, 400, { error: 'invalid listingId' }); return }
+        try {
+          const { archive } = await extras.skillbots!.downloadSkillPackage(listingId)
+          sendBinary(res, { base64: archive.toString('base64'), contentType: 'application/zip', filename: `${listingId}.zip` })
+        } catch (cause) { apiFailure(res, cause) }
+      }),
+      register(`${PREFIX}/skill-package/install`, async (req, res) => {
+        if (req.method !== 'POST' || !requireOrigin(req, res)) return
+        const listingId = new URL(req.url ?? '/', 'http://localhost').searchParams.get('listingId')
+        if (listingId === null || !ID_PATTERN.test(listingId)) { sendJson(res, 400, { error: 'invalid listingId' }); return }
+        try { sendJson(res, 200, await extras.skillbots!.installSkill(listingId, extras.skillRoot!())) } catch (cause) { apiFailure(res, cause) }
+      }),
+      register(`${PREFIX}/skill-package/uninstall`, async (req, res) => {
+        if (req.method !== 'POST' || !requireOrigin(req, res)) return
+        try {
+          const body = await requestBody(req)
+          const skillName = typeof body.skillName === 'string' ? body.skillName.trim() : ''
+          if (skillName === '') throw new LoomApiError(400, 'skillName is required')
+          sendJson(res, 200, { removed: await uninstallSkillPackage(extras.skillRoot!(), skillName) })
+        } catch (cause) { apiFailure(res, cause) }
+      }),
+      register(`${PREFIX}/skill-package/installed`, async (req, res) => {
+        if (req.method !== 'GET' || !requireOrigin(req, res)) return
+        try { sendJson(res, 200, { items: await listInstalledSkillPackages(extras.skillRoot!()) }) } catch (cause) { apiFailure(res, cause) }
+      }),
+    ] : []),
   ]
   return () => routes.forEach(dispose => dispose())
 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ReactNode } from 'react'
+import type { KeyboardEvent, MouseEvent, ReactNode } from 'react'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import {
   IconCheckOutline16,
@@ -68,6 +68,12 @@ function fileToBase64(file: File): Promise<string> {
 
 /** Card count drawn while the storefront is still loading. */
 const SKELETON_CARDS = [0, 1, 2] as const
+
+/** Nested controls keep their own behavior; the card body starts the chat handoff. */
+function isNestedControl(target: EventTarget | null): boolean {
+  return target instanceof Element
+    && target.closest('button,a,input,textarea,select,label') !== null
+}
 
 /**
  * The cloud SkillBot market.
@@ -404,7 +410,23 @@ export function LoomloomMarketPage({ t, sessions, workspaceOf }: LoomloomMarketP
                       const creator = entry.creatorNickname
                       const updated = updatedText(entry.updatedAt)
                       return (
-                        <article className="loomloomMarketCard" key={entry.id} aria-label={entry.name}>
+                        <article
+                          className="loomloomMarketCard"
+                          key={entry.id}
+                          aria-label={entry.name}
+                          aria-disabled={!entry.available}
+                          role="button"
+                          tabIndex={entry.available ? 0 : -1}
+                          onClick={(event: MouseEvent<HTMLElement>) => {
+                            if (entry.available && !starting && !isNestedControl(event.target)) void invoke(entry)
+                          }}
+                          onKeyDown={(event: KeyboardEvent<HTMLElement>) => {
+                            if ((event.key === 'Enter' || event.key === ' ') && entry.available && !starting && !isNestedControl(event.target)) {
+                              event.preventDefault()
+                              void invoke(entry)
+                            }
+                          }}
+                        >
                           <div className="loomloomMarketCardHead">
                             <span className="loomloomMarketAvatar" aria-hidden="true">{monogram(creator ?? entry.name)}</span>
                             <span className="loomloomMarketCardTitle">

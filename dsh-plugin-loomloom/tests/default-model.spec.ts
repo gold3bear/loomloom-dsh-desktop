@@ -10,6 +10,6 @@ test('uses the DSH default-model service instead of local provider settings', as
   } as never)
   assert.deepEqual(saved, {
     provider: 'shengsuanyun',
-    model: 'deepseek/deepseek-v4-flash',
+    model: 'deepseek-v4-flash',
   })
 })
